@@ -158,6 +158,13 @@ function HourlyChart({hours,unit,timezone,selectedDate,mode}:{hours:{time:string
     const scale=colorScale(palette);
     const colorAt=(v:number)=>scale(vmax>vmin?(v-vmin)/(vmax-vmin):.5);
     const lowIndex=values.indexOf(vmin), highIndex=values.indexOf(vmax);
+    // Left-to-right gradient across the chart area (not a value-driven visualMap — that
+    // repeatedly crashed the renderer once markPoint/markLine were attached to a mapped
+    // series, since those elements don't carry the plain [x,y] values it expects). A plain
+    // directional LinearGradient can't touch marker internals at all, and still gives a
+    // cold→hot sweep that matches a normal day's shape (cool overnight, warm at midday).
+    const lineGradient=new echarts.graphic.LinearGradient(0,0,1,0,palette.map((color,i)=>({offset:i/(palette.length-1),color})));
+    const areaGradient=new echarts.graphic.LinearGradient(0,0,1,0,palette.map((color,i)=>({offset:i/(palette.length-1),color})));
 
     // Interpolated value at the exact current moment, so the dotted "past" curve reaches
     // precisely to the live marker instead of stopping at the last full-hour sample.
@@ -176,27 +183,19 @@ function HourlyChart({hours,unit,timezone,selectedDate,mode}:{hours:{time:string
 
     const currentMark=hasCurrent?{symbol:["none","none"],silent:true,animation:false,lineStyle:{color:"rgba(232,239,246,.75)",width:1.2,type:"dashed"},label:{show:false},data:[{xAxis:nowTs}]}:undefined;
 
-    const base:any={name:mode==="actual"?"Actual":"Feels like",type:"line",data:mainData,smooth:.22,showSymbol:false,lineStyle:{width:3},itemStyle:{color:palette[palette.length-1]},areaStyle:mode==="actual"?{opacity:.4}:{opacity:0},z:3};
-    const past:any=hasCurrent?{name:"__pastCurve",type:"line",data:pastData,smooth:.22,showSymbol:false,lineStyle:{width:3,type:"dotted"},itemStyle:{opacity:0},areaStyle:{opacity:0},tooltip:{show:false},z:4}:null;
-    // Markers AND the "now" line both live on their own invisible series, fully outside
-    // visualMap's seriesIndex — visualMap recolors every element attached to a targeted
-    // series (markPoint, markLine, ...), and those elements don't carry the plain [x,y]
-    // values it expects, which crashes the renderer. Keeping them off the mapped series
-    // avoids that entirely, and lets us set their colors explicitly anyway.
-    const markers:any=mode==="actual"?{name:"__markers",type:"line",data:mainData,showSymbol:false,lineStyle:{opacity:0},areaStyle:{opacity:0},tooltip:{show:false},z:5,markPoint:{symbol:"circle",symbolSize:6,silent:true,label:{show:true,fontFamily:"Space Grotesk",fontSize:12,fontWeight:700,formatter:(p:any)=>p.data.name},data:[
+    const base:any={name:mode==="actual"?"Actual":"Feels like",type:"line",data:mainData,smooth:.22,showSymbol:false,lineStyle:{width:3,color:lineGradient},itemStyle:{color:palette[palette.length-1]},areaStyle:mode==="actual"?{color:areaGradient,opacity:.4}:{opacity:0},markLine:currentMark,markPoint:mode==="actual"?{symbol:"circle",symbolSize:6,silent:true,label:{show:true,fontFamily:"Space Grotesk",fontSize:12,fontWeight:700,formatter:(p:any)=>p.data.name},data:[
       {name:"L",coord:[times[lowIndex],values[lowIndex]],itemStyle:{color:"#0c1a2a",borderColor:colorAt(values[lowIndex]),borderWidth:2},label:{position:"top",offset:[0,-10],color:colorAt(values[lowIndex])}},
       {name:"H",coord:[times[highIndex],values[highIndex]],itemStyle:{color:"#0c1a2a",borderColor:colorAt(values[highIndex]),borderWidth:2},label:{position:"top",offset:[0,-10],color:colorAt(values[highIndex])}}
-    ]}}:null;
-    const nowLine:any=hasCurrent?{name:"__nowLine",type:"line",data:mainData,showSymbol:false,lineStyle:{opacity:0},areaStyle:{opacity:0},tooltip:{show:false},z:6,markLine:currentMark}:null;
+    ]}:undefined,z:3};
+    const past:any=hasCurrent?{name:"__pastCurve",type:"line",data:pastData,smooth:.22,showSymbol:false,lineStyle:{width:3,type:"dotted",color:lineGradient,opacity:.75},itemStyle:{opacity:0},areaStyle:{opacity:0},tooltip:{show:false},z:4}:null;
 
     c.setOption({
       animationDuration:300,
-      tooltip:{show:true,trigger:"axis",axisPointer:{type:"line",lineStyle:{color:"rgba(224,235,246,.28)",width:1}},backgroundColor:"rgba(7,18,30,.96)",borderColor:"rgba(194,216,239,.16)",textStyle:{color:"#eaf2f8",fontFamily:"DM Sans",fontSize:11},formatter:(params:any[])=>{const row=params.find(p=>p.seriesName!=="__pastCurve"&&p.seriesName!=="__markers"&&p.seriesName!=="__nowLine"&&p.value?.[1]!=null);if(!row)return"";return`<div style="font-weight:700;margin-bottom:6px">${hourFmt(row.value[0])}</div><div style="display:flex;gap:10px;justify-content:space-between"><span>${mode==="actual"?"Actual":"Feels like"}</span><b>${Math.round(row.value[1])}${unit}</b></div>`}},
+      tooltip:{show:true,trigger:"axis",axisPointer:{type:"line",lineStyle:{color:"rgba(224,235,246,.28)",width:1}},backgroundColor:"rgba(7,18,30,.96)",borderColor:"rgba(194,216,239,.16)",textStyle:{color:"#eaf2f8",fontFamily:"DM Sans",fontSize:11},formatter:(params:any[])=>{const row=params.find(p=>p.seriesName!=="__pastCurve"&&p.value?.[1]!=null);if(!row)return"";return`<div style="font-weight:700;margin-bottom:6px">${hourFmt(row.value[0])}</div><div style="display:flex;gap:10px;justify-content:space-between"><span>${mode==="actual"?"Actual":"Feels like"}</span><b>${Math.round(row.value[1])}${unit}</b></div>`}},
       grid:{left:46,right:14,top:34,bottom:32,containLabel:false},
       xAxis:{type:"time",min:times[0],max:times[times.length-1],axisTick:{lineStyle:{color:"#52687e"}},axisLabel:{color:"#8ea0b3",fontSize:10,hideOverlap:true,formatter:hourFmt},axisLine:{lineStyle:{color:"#31465c"}}},
       yAxis:{type:"value",scale:true,axisLabel:{color:"#8ea0b3",fontSize:10,formatter:`{value}${unit}`},splitLine:{lineStyle:{color:"rgba(150,170,200,.10)"}}},
-      visualMap:{show:false,type:"continuous",min:vmin,max:vmax,dimension:1,seriesIndex:past?[0,1]:[0],inRange:{color:palette}},
-      series:[base,past,markers,nowLine].filter(Boolean)
+      series:[base,past].filter(Boolean)
     });
     const ro=new ResizeObserver(()=>c.resize());ro.observe(el);return()=>{ro.disconnect();c.dispose()};
   },[hours,unit,timezone,selectedDate,clock,mode]);
