@@ -3,7 +3,7 @@ import{CloudSun,ChevronDown,MapPin,RefreshCw,Sun,Thermometer,ThermometerSnowflak
 import*as echarts from"echarts";
 import{archive,baseline,forecast,searchLocations}from"./api";
 import type{Location,WeatherResponse}from"./types";
-import{fmt,fmtWeekdayDate,icon,label,localToday}from"./weather";
+import{fmt,fmtWeekdayDate,icon,label,localToday,hourLabel}from"./weather";
 import"./styles.css";
 
 const fallback:Location={id:2267057,name:"Lisbon",country:"Portugal",country_code:"PT",latitude:38.7223,longitude:-9.1393,timezone:"Europe/Lisbon"};
@@ -128,17 +128,11 @@ function DayCard({d,i,selected,onClick,conv}:{d:any;i:number;selected:boolean;on
  return <button className={`day ${selected?"selected":""}`} onClick={onClick}><small>{i===0?"Today":new Date(d.date+"T12:00:00").toLocaleDateString(undefined,{weekday:"short"})}</small><b>{icon(d.code)}</b><strong><small className="hl">H</small>{Math.round(conv(d.max))}°</strong><span><small className="hl">L</small>{Math.round(conv(d.min))}°</span><p>{label(d.code)}</p><small className="dayMeta"><span>💧 {Math.round(d.rain)}%</span> · <span>{Math.round(d.wind)} km/h</span></small></button>
 }
 
-/** Wall-clock timestamp for an hourly point, as a plain number so the axis can place it
- * continuously (echarts "time" axis) instead of snapping to the nearest hourly tick. The
- * strings from Open-Meteo have no offset, so this is a self-consistent local coordinate —
- * every timestamp in a given chart is parsed the same way, so relative positions (including
- * the live "now" marker below) come out correct regardless of the browser's own timezone. */
-const ts=(s:string)=>+new Date(s);
-const hourFmt=(t:number)=>{const d=new Date(t);const h=d.getHours();const period=h<12?"AM":"PM";const h12=h%12===0?12:h%12;return`${h12} ${period}`};
-
-/** Hour-by-hour temperature chart. Past hours render dotted; the curve and its fill are
- * colored on a cold→hot gradient rather than one flat color, and a "now" marker sits at the
- * exact current minute rather than snapping to the nearest hourly sample. */
+/** Hour-by-hour temperature chart. Structured like the original stable version (category
+ * axis, markPoint attached directly to the series) — the only additions are gradient colors
+ * (a static LinearGradient value, not visualMap) and a plain `graphic` line for the live-time
+ * marker instead of `markLine`, since `markLine`/`markPoint` diffing on this echarts build is
+ * what was crashing. `graphic` elements are simple shapes and don't go through that path. */
 function HourlyChart({hours,unit,timezone,selectedDate,mode}:{hours:{time:string;temp:number;feels:number}[];unit:string;timezone:string;selectedDate:string;mode:"actual"|"feels"}){
   const chartRef=useRef<HTMLDivElement|null>(null);
   const[clock,setClock]=useState(0);
@@ -146,77 +140,81 @@ function HourlyChart({hours,unit,timezone,selectedDate,mode}:{hours:{time:string
   useEffect(()=>{
     const el=chartRef.current;if(!el||!hours.length)return;
     const c=echarts.init(el);
+    const GL=46,GR=14,GT=34,GB=32; // grid pixel margins, kept in sync with the `grid` option below
     const parts=new Intl.DateTimeFormat("en-CA",{timeZone:timezone,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hourCycle:"h23"}).formatToParts(new Date(clock||Date.now()));
     const part=(t:string)=>parts.find(x=>x.type===t)?.value||"";
     const today=localToday(timezone), nowDate=`${part("year")}-${part("month")}-${part("day")}`;
     const isToday=selectedDate===today&&nowDate===today;
-    const nowTs=isToday?ts(`${nowDate}T${part("hour")}:${part("minute")}`):null;
+    const nowHour=part("hour"), currentTime=isToday?`${today}T${nowHour}:00`:null;
+    const currentIndex=currentTime?hours.findIndex(h=>h.time===currentTime):-1;
+    const hasCurrent=currentIndex>=0;
+    // Exact fractional position (hour + minute/60) for the live-time marker — the data itself
+    // stays on its normal hourly ticks, but the marker line isn't limited to snapping there.
+    const fracIndex=isToday?Number(nowHour)+Number(part("minute"))/60:null;
 
-    const times=hours.map(h=>ts(h.time)), values=hours.map(h=>mode==="actual"?h.temp:h.feels);
+    const dates=hours.map(h=>h.time), values=hours.map(h=>mode==="actual"?h.temp:h.feels);
     const vmin=Math.min(...values), vmax=Math.max(...values);
     const palette=mode==="actual"?ACTUAL_PALETTE:FEELS_PALETTE;
     const scale=colorScale(palette);
     const colorAt=(v:number)=>scale(vmax>vmin?(v-vmin)/(vmax-vmin):.5);
     const lowIndex=values.indexOf(vmin), highIndex=values.indexOf(vmax);
-    // Left-to-right gradient across the chart area (not a value-driven visualMap — that
-    // repeatedly crashed the renderer once markPoint/markLine were attached to a mapped
-    // series, since those elements don't carry the plain [x,y] values it expects). A plain
-    // directional LinearGradient can't touch marker internals at all, and still gives a
-    // cold→hot sweep that matches a normal day's shape (cool overnight, warm at midday).
+    const width=el.clientWidth, labelStep=width>=700?1:width>=500?2:4;
+    const axis={type:"category",boundaryGap:false,data:dates,axisTick:{interval:0,length:4,lineStyle:{color:"#52687e"}},axisLabel:{color:"#8ea0b3",interval:(idx:number)=>idx%labelStep===0||idx===dates.length-1,fontSize:10,hideOverlap:true,formatter:(v:string)=>hourLabel(v)},axisLine:{lineStyle:{color:"#31465c"}}};
+
+    // Cold→hot sweep across the chart (left→right), applied as a static color value on
+    // lineStyle/areaStyle — not a value-driven visualMap, which is what previously crashed.
     const lineGradient=new echarts.graphic.LinearGradient(0,0,1,0,palette.map((color,i)=>({offset:i/(palette.length-1),color})));
     const areaGradient=new echarts.graphic.LinearGradient(0,0,1,0,palette.map((color,i)=>({offset:i/(palette.length-1),color})));
 
-    // Interpolated value at the exact current moment, so the dotted "past" curve reaches
-    // precisely to the live marker instead of stopping at the last full-hour sample.
-    let nowIdx=-1, nowVal:number|null=null;
-    if(nowTs!=null){
-      nowIdx=times.findIndex(t=>t>nowTs)-1;
-      if(nowIdx>=0&&nowIdx<times.length-1){
-        const t0=times[nowIdx],t1=times[nowIdx+1],f=(nowTs-t0)/(t1-t0);
-        nowVal=values[nowIdx]+(values[nowIdx+1]-values[nowIdx])*f;
-      }else if(nowIdx>=times.length-1){nowIdx=times.length-1;nowVal=values[nowIdx]}
-    }
-    const hasCurrent=nowTs!=null&&nowVal!=null;
-
-    const mainData=times.map((t,i)=>[t,values[i]]);
-    const pastData=hasCurrent?[...times.slice(0,nowIdx+1).map((t,i)=>[t,values[i]]),[nowTs,nowVal]]:[];
-
-    const currentMark=hasCurrent?{symbol:["none","none"],silent:true,animation:false,lineStyle:{color:"rgba(232,239,246,.75)",width:1.2,type:"dashed"},label:{show:false},data:[{xAxis:nowTs}]}:undefined;
-
-    const base:any={name:mode==="actual"?"Actual":"Feels like",type:"line",data:mainData,smooth:.22,showSymbol:false,lineStyle:{width:3,color:lineGradient},itemStyle:{color:palette[palette.length-1]},areaStyle:mode==="actual"?{color:areaGradient,opacity:.4}:{opacity:0},markLine:currentMark,markPoint:mode==="actual"?{symbol:"circle",symbolSize:6,silent:true,label:{show:true,fontFamily:"Space Grotesk",fontSize:12,fontWeight:700,formatter:(p:any)=>p.data.name},data:[
-      {name:"L",coord:[times[lowIndex],values[lowIndex]],itemStyle:{color:"#0c1a2a",borderColor:colorAt(values[lowIndex]),borderWidth:2},label:{position:"top",offset:[0,-10],color:colorAt(values[lowIndex])}},
-      {name:"H",coord:[times[highIndex],values[highIndex]],itemStyle:{color:"#0c1a2a",borderColor:colorAt(values[highIndex]),borderWidth:2},label:{position:"top",offset:[0,-10],color:colorAt(values[highIndex])}}
+    const base:any={name:mode==="actual"?"Actual":"Feels like",type:"line",data:hours.map(h=>[h.time,mode==="actual"?h.temp:h.feels]),smooth:.22,showSymbol:false,lineStyle:{width:3,color:lineGradient},itemStyle:{color:palette[palette.length-1]},areaStyle:mode==="actual"?{color:areaGradient,opacity:.4}:{opacity:0},markPoint:mode==="actual"?{symbol:"circle",symbolSize:6,silent:true,label:{show:true,fontFamily:"Space Grotesk",fontSize:12,fontWeight:700,formatter:(p:any)=>p.data.name},data:[
+      {name:"L",coord:[hours[lowIndex]?.time,values[lowIndex]],itemStyle:{color:"#0c1a2a",borderColor:colorAt(values[lowIndex]),borderWidth:2},label:{position:"top",offset:[0,-10],color:colorAt(values[lowIndex])}},
+      {name:"H",coord:[hours[highIndex]?.time,values[highIndex]],itemStyle:{color:"#0c1a2a",borderColor:colorAt(values[highIndex]),borderWidth:2},label:{position:"top",offset:[0,-10],color:colorAt(values[highIndex])}}
     ]}:undefined,z:3};
-    const past:any=hasCurrent?{name:"__pastCurve",type:"line",data:pastData,smooth:.22,showSymbol:false,lineStyle:{width:3,type:"dotted",color:lineGradient,opacity:.75},itemStyle:{opacity:0},areaStyle:{opacity:0},tooltip:{show:false},z:4}:null;
+    const past:any=hasCurrent?{name:"__pastCurve",type:"line",data:hours.map((h,i)=>i<=currentIndex?[h.time,values[i]]:[h.time,null]),connectNulls:false,smooth:.22,showSymbol:false,lineStyle:{width:3,type:"dotted",color:lineGradient,opacity:.7},itemStyle:{opacity:0},areaStyle:{opacity:0},tooltip:{show:false},z:4}:null;
 
-    c.setOption({
-      animationDuration:300,
-      tooltip:{show:true,trigger:"axis",axisPointer:{type:"line",lineStyle:{color:"rgba(224,235,246,.28)",width:1}},backgroundColor:"rgba(7,18,30,.96)",borderColor:"rgba(194,216,239,.16)",textStyle:{color:"#eaf2f8",fontFamily:"DM Sans",fontSize:11},formatter:(params:any[])=>{const row=params.find(p=>p.seriesName!=="__pastCurve"&&p.value?.[1]!=null);if(!row)return"";return`<div style="font-weight:700;margin-bottom:6px">${hourFmt(row.value[0])}</div><div style="display:flex;gap:10px;justify-content:space-between"><span>${mode==="actual"?"Actual":"Feels like"}</span><b>${Math.round(row.value[1])}${unit}</b></div>`}},
-      grid:{left:46,right:14,top:34,bottom:32,containLabel:false},
-      xAxis:{type:"time",min:times[0],max:times[times.length-1],axisTick:{lineStyle:{color:"#52687e"}},axisLabel:{color:"#8ea0b3",fontSize:10,hideOverlap:true,formatter:hourFmt},axisLine:{lineStyle:{color:"#31465c"}}},
-      yAxis:{type:"value",scale:true,axisLabel:{color:"#8ea0b3",fontSize:10,formatter:`{value}${unit}`},splitLine:{lineStyle:{color:"rgba(150,170,200,.10)"}}},
-      series:[base,past].filter(Boolean)
-    });
-    const ro=new ResizeObserver(()=>c.resize());ro.observe(el);return()=>{ro.disconnect();c.dispose()};
+    c.setOption({animationDuration:300,tooltip:{show:true,trigger:"axis",axisPointer:{type:"line",lineStyle:{color:"rgba(224,235,246,.28)",width:1}},backgroundColor:"rgba(7,18,30,.96)",borderColor:"rgba(194,216,239,.16)",textStyle:{color:"#eaf2f8",fontFamily:"DM Sans",fontSize:11},formatter:(params:any[])=>{const row=params.find(p=>p.seriesName!=="__pastCurve"&&p.value?.[1]!=null);if(!row)return"";const p=hours.find(h=>h.time===row.axisValue);if(!p)return"";const value=mode==="actual"?p.temp:p.feels;return `<div style="font-weight:700;margin-bottom:6px">${hourLabel(row.axisValue)}</div><div style="display:flex;gap:10px;justify-content:space-between"><span>${mode==="actual"?"Actual":"Feels like"}</span><b>${Math.round(value)}${unit}</b></div>`;}},grid:{left:GL,right:GR,top:GT,bottom:GB,containLabel:false},xAxis:axis,yAxis:{type:"value",scale:true,axisLabel:{color:"#8ea0b3",fontSize:10,formatter:`{value}${unit}`},splitLine:{lineStyle:{color:"rgba(150,170,200,.10)"}}},series:[base,past].filter(Boolean)});
+
+    // Live-time marker: a plain `graphic` line, positioned with hand-rolled pixel math
+    // (boundaryGap:false category axis ⇒ evenly-spaced points), not `markLine`. This is a
+    // separate, much simpler echarts component that never touches series diffing.
+    const paintNow=()=>{
+      if(fracIndex==null||dates.length<2){c.setOption({graphic:[{id:"nowLine",$action:"remove"}]});return}
+      const w=el.clientWidth-GL-GR, h=el.clientHeight;
+      const x=GL+(fracIndex/(dates.length-1))*w;
+      c.setOption({graphic:[{id:"nowLine",type:"line",$action:"merge",silent:true,z:50,shape:{x1:x,y1:GT,x2:x,y2:Math.max(GT,h-GB)},style:{stroke:"rgba(232,239,246,.8)",lineWidth:1.2,lineDash:[3,3]}}]});
+    };
+    paintNow();
+
+    const ro=new ResizeObserver(()=>{c.resize();paintNow()});ro.observe(el);return()=>{ro.disconnect();c.dispose()};
   },[hours,unit,timezone,selectedDate,clock,mode]);
   return <div className="hourlyChart" ref={chartRef}/>;
 }
 
-/** Probability chart with weather-type-aware labels and a live current-time divider placed
- * at the exact minute (continuous time axis), not snapped to the nearest hourly sample. */
+/** Probability chart with weather-type-aware labels. The live-time divider uses the same
+ * `graphic`-line technique as HourlyChart (see note there) rather than `markLine`. */
 function PrecipitationChart({hours,timezone,selectedDate}:{hours:{time:string;rain:number;code:number}[];timezone:string;selectedDate:string}){
   const chartRef=useRef<HTMLDivElement|null>(null);const[clock,setClock]=useState(0);
   useEffect(()=>{setClock(Date.now());const id=window.setInterval(()=>setClock(Date.now()),60_000);return()=>window.clearInterval(id)},[selectedDate,timezone]);
   useEffect(()=>{const el=chartRef.current;if(!el||!hours.length)return;const c=echarts.init(el);
+    const GL=46,GR=14,GT=18,GB=32;
     const parts=new Intl.DateTimeFormat("en-CA",{timeZone:timezone,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hourCycle:"h23"}).formatToParts(new Date(clock||Date.now()));const part=(t:string)=>parts.find(x=>x.type===t)?.value||"";
     const today=localToday(timezone),nowDate=`${part("year")}-${part("month")}-${part("day")}`,isToday=selectedDate===today&&nowDate===today;
-    const nowTs=isToday?ts(`${nowDate}T${part("hour")}:${part("minute")}`):null;
-    const times=hours.map(h=>ts(h.time));
-    const hasCurrent=nowTs!=null&&nowTs>=times[0]&&nowTs<=times[times.length-1];
-    const line={name:"Chance of precipitation",type:"line",data:times.map((t,i)=>[t,hours[i].rain]),smooth:.2,connectNulls:true,showSymbol:false,lineStyle:{width:3,color:"#63b8ff"},itemStyle:{color:"#63b8ff"},areaStyle:{color:new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:"rgba(99,184,255,.30)"},{offset:.6,color:"rgba(99,184,255,.10)"},{offset:1,color:"rgba(255,102,76,0)"}])},markLine:hasCurrent?{symbol:["none","none"],silent:true,animation:false,lineStyle:{color:"rgba(232,239,246,.75)",width:1.2,type:"dashed"},label:{show:false},data:[{xAxis:nowTs}]}:undefined,z:3};
-    const shade=hasCurrent?{name:"__pastShade",type:"line",data:times.map(t=>[t,null]),showSymbol:false,lineStyle:{opacity:0},areaStyle:{opacity:0},markArea:{silent:true,itemStyle:{color:new echarts.graphic.LinearGradient(0,0,1,0,[{offset:0,color:"rgba(1,7,13,.55)"},{offset:.7,color:"rgba(1,7,13,.34)"},{offset:1,color:"rgba(1,7,13,.06)"}])},data:[[{xAxis:times[0]},{xAxis:nowTs}]]},tooltip:{show:false},z:20}:null;
-    c.setOption({animationDuration:300,tooltip:{show:true,trigger:"axis",axisPointer:{type:"line",lineStyle:{color:"rgba(224,235,246,.28)"}},backgroundColor:"rgba(7,18,30,.96)",borderColor:"rgba(194,216,239,.16)",textStyle:{color:"#eaf2f8",fontFamily:"DM Sans",fontSize:11},formatter:(params:any[])=>{const row=params.find(p=>p.seriesName==="Chance of precipitation");if(!row)return"";return `<div style="font-weight:700;margin-bottom:6px">${hourFmt(row.value[0])}</div><b>${Math.round(row.value[1])}%</b>`;}},grid:{left:46,right:14,top:18,bottom:32,containLabel:false},xAxis:{type:"time",min:times[0],max:times[times.length-1],axisTick:{lineStyle:{color:"#52687e"}},axisLabel:{color:"#8ea0b3",fontSize:10,hideOverlap:true,formatter:hourFmt},axisLine:{lineStyle:{color:"#31465c"}}},yAxis:{type:"value",min:0,max:100,interval:25,axisLabel:{color:"#8ea0b3",fontSize:10,formatter:"{value}%"},splitLine:{lineStyle:{color:"rgba(150,170,200,.10)"}}},series:[line,shade].filter(Boolean)});
-    const ro=new ResizeObserver(()=>c.resize());ro.observe(el);return()=>{ro.disconnect();c.dispose()};
+    const nowHour=part("hour"),currentTime=isToday?`${today}T${nowHour}:00`:null,currentIndex=currentTime?hours.findIndex(h=>h.time===currentTime):-1,hasCurrent=currentIndex>=0;
+    const fracIndex=isToday?Number(nowHour)+Number(part("minute"))/60:null;
+    const dates=hours.map(h=>h.time),width=el.clientWidth,labelStep=width>=700?1:width>=500?2:4;
+    const line={name:"Chance of precipitation",type:"line",data:hours.map(h=>[h.time,h.rain]),smooth:.2,connectNulls:true,showSymbol:false,lineStyle:{width:3,color:"#63b8ff"},itemStyle:{color:"#63b8ff"},areaStyle:{color:new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:"rgba(99,184,255,.30)"},{offset:.6,color:"rgba(99,184,255,.10)"},{offset:1,color:"rgba(255,102,76,0)"}])},z:3};
+    const shade=hasCurrent?{name:"__pastShade",type:"line",data:hours.map(h=>[h.time,null]),showSymbol:false,lineStyle:{opacity:0},areaStyle:{opacity:0},markArea:{silent:true,itemStyle:{color:new echarts.graphic.LinearGradient(0,0,1,0,[{offset:0,color:"rgba(1,7,13,.55)"},{offset:.7,color:"rgba(1,7,13,.34)"},{offset:1,color:"rgba(1,7,13,.06)"}])},data:[[{xAxis:dates[0]},{xAxis:dates[currentIndex]}]]},tooltip:{show:false},z:20}:null;
+    c.setOption({animationDuration:300,tooltip:{show:true,trigger:"axis",axisPointer:{type:"line",lineStyle:{color:"rgba(224,235,246,.28)"}},backgroundColor:"rgba(7,18,30,.96)",borderColor:"rgba(194,216,239,.16)",textStyle:{color:"#eaf2f8",fontFamily:"DM Sans",fontSize:11},formatter:(params:any[])=>{const row=params.find(p=>p.seriesName==="Chance of precipitation");if(!row)return"";return `<div style="font-weight:700;margin-bottom:6px">${hourLabel(row.axisValue)}</div><b>${Math.round(row.value[1])}%</b>`;}},grid:{left:GL,right:GR,top:GT,bottom:GB,containLabel:false},xAxis:{type:"category",boundaryGap:false,data:dates,axisTick:{interval:0},axisLabel:{color:"#8ea0b3",interval:(idx:number)=>idx%labelStep===0||idx===dates.length-1,fontSize:10,hideOverlap:true,formatter:(v:string)=>hourLabel(v)},axisLine:{lineStyle:{color:"#31465c"}}},yAxis:{type:"value",min:0,max:100,interval:25,axisLabel:{color:"#8ea0b3",fontSize:10,formatter:"{value}%"},splitLine:{lineStyle:{color:"rgba(150,170,200,.10)"}}},series:[line,shade].filter(Boolean)});
+
+    const paintNow=()=>{
+      if(fracIndex==null||dates.length<2){c.setOption({graphic:[{id:"nowLine",$action:"remove"}]});return}
+      const w=el.clientWidth-GL-GR, h=el.clientHeight;
+      const x=GL+(fracIndex/(dates.length-1))*w;
+      c.setOption({graphic:[{id:"nowLine",type:"line",$action:"merge",silent:true,z:50,shape:{x1:x,y1:GT,x2:x,y2:Math.max(GT,h-GB)},style:{stroke:"rgba(232,239,246,.8)",lineWidth:1.2,lineDash:[3,3]}}]});
+    };
+    paintNow();
+
+    const ro=new ResizeObserver(()=>{c.resize();paintNow()});ro.observe(el);return()=>{ro.disconnect();c.dispose()};
   },[hours,timezone,selectedDate,clock]);
   return <div className="precipChart" ref={chartRef}/>;
 }
