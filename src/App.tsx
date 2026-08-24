@@ -29,7 +29,7 @@ function LocationPicker({loc,setLoc}:{loc:Location;setLoc:(x:Location)=>void}){
 type Point={date:string;value:number;min?:number;max?:number};
 
 /** Builds a stacked min→max filled band (plus dashed boundary lines) for one series category. */
-function rangeSeries(seriesLabel:string,points:Point[],color:string,dash:"dashed"|"dotted"){
+function rangeSeries(key:string,seriesLabel:string,points:Point[],color:string,dash:"dashed"|"dotted"){
   const minData=points.map(p=>[p.date,p.min??null]);
   const maxData=points.map(p=>[p.date,p.max??null]);
   return [
@@ -53,9 +53,9 @@ function TemperatureChart({observed,typical,forecastPoints,unit,showForecast,sho
 
     const series:any[]=showRange
       ? [
-          ...rangeSeries("Typical",typical,"#8293a8","dashed"),
-          ...rangeSeries("Observed",observed,"#55b7ff","dashed"),
-          ...(showForecast&&forecastPoints.length?rangeSeries("Forecast",forecastPoints,"#ff9d5c","dotted"):[])
+          ...rangeSeries("typical","Typical",typical,"#8293a8","dashed"),
+          ...rangeSeries("observed","Observed",observed,"#55b7ff","dashed"),
+          ...(showForecast&&forecastPoints.length?rangeSeries("forecast","Forecast",forecastPoints,"#ff9d5c","dotted"):[])
         ]
       : [
           {name:"Typical",type:"line",data:typical.map(x=>[x.date,x.value]),smooth:true,showSymbol:false,lineStyle:{type:"dashed",width:2,color:"#8293a8"},itemStyle:{color:"#8293a8"}},
