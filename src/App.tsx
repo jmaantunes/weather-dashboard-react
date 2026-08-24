@@ -123,6 +123,18 @@ function DayCard({d,i,selected,onClick,conv}:{d:any;i:number;selected:boolean;on
  return <button className={`day ${selected?"selected":""}`} onClick={onClick}><small>{i===0?"Today":new Date(d.date+"T12:00:00").toLocaleDateString(undefined,{weekday:"short"})}</small><b>{icon(d.code)}</b><strong><small className="hl">H</small>{Math.round(conv(d.max))}°</strong><span><small className="hl">L</small>{Math.round(conv(d.min))}°</span><p>{label(d.code)}</p><small className="dayMeta"><span>💧 {Math.round(d.rain)}%</span> · <span>{Math.round(d.wind)} km/h</span></small></button>
 }
 
+/** Blue → yellow → orange interpolation used to color the hourly curve by temperature. */
+const TEMP_STOPS:[number,[number,number,number]][]=[[0,[74,141,255]],[.25,[94,200,255]],[.5,[255,214,102]],[.75,[255,157,92]],[1,[255,106,61]]];
+function tempColor(v:number,vmin:number,vmax:number){
+  const t=vmax>vmin?Math.max(0,Math.min(1,(v-vmin)/(vmax-vmin))):.5;
+  let a=TEMP_STOPS[0],b=TEMP_STOPS[TEMP_STOPS.length-1];
+  for(let i=0;i<TEMP_STOPS.length-1;i++){if(t>=TEMP_STOPS[i][0]&&t<=TEMP_STOPS[i+1][0]){a=TEMP_STOPS[i];b=TEMP_STOPS[i+1];break}}
+  const span=b[0]-a[0]||1, lt=(t-a[0])/span;
+  const mix=(i:number)=>Math.round(a[1][i]+(b[1][i]-a[1][i])*lt);
+  return `rgb(${mix(0)},${mix(1)},${mix(2)})`;
+}
+const TEMP_GRADIENT=["#4a8dff","#5ec8ff","#ffd666","#ff9d5c","#ff6a3d"];
+
 /** Hour-by-hour temperature chart. */
 function HourlyChart({hours,unit,timezone,selectedDate,mode}:{hours:{time:string;temp:number;feels:number}[];unit:string;timezone:string;selectedDate:string;mode:"actual"|"feels"}){
   const chartRef=useRef<HTMLDivElement|null>(null);
@@ -139,14 +151,27 @@ function HourlyChart({hours,unit,timezone,selectedDate,mode}:{hours:{time:string
     const hasCurrent=currentIndex>=0;
     const dates=hours.map(h=>h.time), values=hours.map(h=>mode==="actual"?h.temp:h.feels);
     const lowIndex=values.indexOf(Math.min(...values)), highIndex=values.indexOf(Math.max(...values));
+    const vmin=Math.min(...values), vmax=Math.max(...values);
     const width=el.clientWidth, labelStep=width>=700?1:width>=500?2:4;
     const axis={type:"category",boundaryGap:false,data:dates,axisTick:{interval:0,length:4,lineStyle:{color:"#52687e"}},axisLabel:{color:"#8ea0b3",interval:(idx:number)=>idx%labelStep===0||idx===dates.length-1,fontSize:10,hideOverlap:true,formatter:(v:string)=>hourLabel(v)},axisLine:{lineStyle:{color:"#31465c"}}};
     const currentMark=hasCurrent?{symbol:["none","none"],silent:true,animation:false,lineStyle:{color:"rgba(232,239,246,.72)",width:1.2,type:"dotted"},label:{show:false},data:[{xAxis:dates[currentIndex]}]}:undefined;
-    const gradient=new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:mode==="actual"?"rgba(79,171,255,.22)":"rgba(71,207,190,.18)"},{offset:.7,color:mode==="actual"?"rgba(255,151,76,.07)":"rgba(71,207,190,.04)"},{offset:1,color:"rgba(0,0,0,0)"}]);
-    const base={name:mode==="actual"?"Actual":"Feels like",type:"line",data:hours.map(h=>[h.time,mode==="actual"?h.temp:h.feels]),smooth:.22,showSymbol:false,lineStyle:{width:3,color:mode==="actual"?"#62b7ff":"#4ed0be"},itemStyle:{color:mode==="actual"?"#62b7ff":"#4ed0be"},areaStyle:{color:gradient},markLine:currentMark,markPoint:mode==="actual"?{symbol:"circle",symbolSize:7,silent:true,label:{show:true,color:"#edf5fc",fontFamily:"Space Grotesk",fontSize:12,fontWeight:700,formatter:(p:any)=>p.data.name},data:[{name:"L",coord:[hours[lowIndex]?.time,values[lowIndex]],itemStyle:{color:"#55aaff",borderColor:"#071624",borderWidth:2},label:{position:"bottom",offset:[0,5]}},{name:"H",coord:[hours[highIndex]?.time,values[highIndex]],itemStyle:{color:"#ff9d5c",borderColor:"#071624",borderWidth:2},label:{position:"top",offset:[0,-5]}}]}:undefined,z:3};
-    const past=hasCurrent?{name:"__pastCurve",type:"line",data:hours.map((h,i)=>i<=currentIndex?[h.time,values[i]]:[h.time,null]),connectNulls:false,smooth:.22,showSymbol:false,lineStyle:{width:3,type:"dotted",color:mode==="actual"?"#62b7ff":"#4ed0be",opacity:.58},itemStyle:{opacity:0},areaStyle:{opacity:0},tooltip:{show:false},z:4}:null;
+
+    // Curve line: recolored per-segment by value via visualMap (blue = cold, orange = hot).
+    const curve:any={name:mode==="actual"?"Actual":"Feels like",type:"line",data:hours.map(h=>[h.time,mode==="actual"?h.temp:h.feels]),smooth:.22,showSymbol:false,lineStyle:{width:3},itemStyle:{},markLine:currentMark,markPoint:mode==="actual"?{symbol:"circle",symbolSize:7,silent:true,label:{show:true,fontFamily:"Space Grotesk",fontSize:12,fontWeight:700,formatter:(p:any)=>p.data.name,color:(p:any)=>p.data.name==="H"?tempColor(values[highIndex],vmin,vmax):tempColor(values[lowIndex],vmin,vmax)} as any,data:[{name:"L",coord:[hours[lowIndex]?.time,values[lowIndex]],itemStyle:{color:tempColor(values[lowIndex],vmin,vmax),borderColor:"#071624",borderWidth:2},label:{position:"top",offset:[0,-8],color:tempColor(values[lowIndex],vmin,vmax)}},{name:"H",coord:[hours[highIndex]?.time,values[highIndex]],itemStyle:{color:tempColor(values[highIndex],vmin,vmax),borderColor:"#071624",borderWidth:2},label:{position:"top",offset:[0,-8],color:tempColor(values[highIndex],vmin,vmax)}}]}:undefined,z:4};
+
+    // Dotted, dimmed overlay for the elapsed portion of the day — same gradient coloring.
+    const past:any=hasCurrent?{name:"__pastCurve",type:"line",data:hours.map((h,i)=>i<=currentIndex?[h.time,values[i]]:[h.time,null]),connectNulls:false,smooth:.22,showSymbol:false,lineStyle:{width:3,type:"dotted",opacity:.55},itemStyle:{opacity:0},tooltip:{show:false},z:5}:null;
+
+    // Separate area-only series (excluded from visualMap) so the fill stays a plain dark
+    // fade instead of being split into flat per-segment colors like the line above it.
+    const area:any=mode==="actual"?{name:"__area",type:"line",data:hours.map(h=>[h.time,h.temp]),smooth:.22,showSymbol:false,lineStyle:{opacity:0},itemStyle:{opacity:0},areaStyle:{color:new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:"rgba(10,22,34,.62)"},{offset:.55,color:"rgba(8,17,27,.30)"},{offset:1,color:"rgba(8,17,27,0)"}])},tooltip:{show:false},z:1}:null;
+
     const shade=hasCurrent?{name:"__pastShade",type:"line",data:hours.map(h=>[h.time,null]),showSymbol:false,lineStyle:{opacity:0},areaStyle:{opacity:0},markArea:{silent:true,itemStyle:{color:new echarts.graphic.LinearGradient(0,0,1,0,[{offset:0,color:"rgba(1,7,13,.60)"},{offset:.68,color:"rgba(1,7,13,.42)"},{offset:1,color:"rgba(1,7,13,.08)"}])},data:[[{xAxis:dates[0]},{xAxis:dates[currentIndex]}]]},tooltip:{show:false},z:20}:null;
-    c.setOption({animationDuration:300,tooltip:{show:true,trigger:"axis",axisPointer:{type:"line",lineStyle:{color:"rgba(224,235,246,.28)",width:1}},backgroundColor:"rgba(7,18,30,.96)",borderColor:"rgba(194,216,239,.16)",textStyle:{color:"#eaf2f8",fontFamily:"DM Sans",fontSize:11},formatter:(params:any[])=>{const row=params.find(p=>p.seriesName!=="__pastShade"&&p.seriesName!=="__pastCurve"&&p.value?.[1]!=null);if(!row)return"";const p=hours.find(h=>h.time===row.axisValue);if(!p)return"";const value=mode==="actual"?p.temp:p.feels;return `<div style="font-weight:700;margin-bottom:6px">${hourLabel(row.axisValue)}</div><div style="display:flex;gap:10px;justify-content:space-between"><span>${mode==="actual"?"Actual":"Feels like"}</span><b>${Math.round(value)}${unit}</b></div>`;}},grid:{left:46,right:14,top:34,bottom:32,containLabel:false},xAxis:axis,yAxis:{type:"value",scale:true,axisLabel:{color:"#8ea0b3",fontSize:10,formatter:`{value}${unit}`},splitLine:{lineStyle:{color:"rgba(150,170,200,.10)"}}},series:[base,past,shade].filter(Boolean)});
+
+    const series=[area,curve,past,shade].filter(Boolean);
+    const gradientSeriesIndex=[series.indexOf(curve),...(past?[series.indexOf(past)]:[])];
+
+    c.setOption({animationDuration:300,visualMap:{show:false,type:"continuous",seriesIndex:gradientSeriesIndex,dimension:1,min:vmin,max:vmax,inRange:{color:TEMP_GRADIENT}},tooltip:{show:true,trigger:"axis",axisPointer:{type:"line",lineStyle:{color:"rgba(224,235,246,.28)",width:1}},backgroundColor:"rgba(7,18,30,.96)",borderColor:"rgba(194,216,239,.16)",textStyle:{color:"#eaf2f8",fontFamily:"DM Sans",fontSize:11},formatter:(params:any[])=>{const row=params.find(p=>typeof p.seriesName==="string"&&!p.seriesName.startsWith("__")&&p.value?.[1]!=null);if(!row)return"";const p=hours.find(h=>h.time===row.axisValue);if(!p)return"";const value=mode==="actual"?p.temp:p.feels;return `<div style="font-weight:700;margin-bottom:6px">${hourLabel(row.axisValue)}</div><div style="display:flex;gap:10px;justify-content:space-between"><span>${mode==="actual"?"Actual":"Feels like"}</span><b>${Math.round(value)}${unit}</b></div>`;}},grid:{left:46,right:14,top:34,bottom:32,containLabel:false},xAxis:axis,yAxis:{type:"value",scale:true,axisLabel:{color:"#8ea0b3",fontSize:10,formatter:`{value}${unit}`},splitLine:{lineStyle:{color:"rgba(150,170,200,.10)"}}},series});
     const ro=new ResizeObserver(()=>c.resize());ro.observe(el);return()=>{ro.disconnect();c.dispose()};
   },[hours,unit,timezone,selectedDate,clock,mode]);
   return <div className="hourlyChart" ref={chartRef}/>;
