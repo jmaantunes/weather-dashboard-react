@@ -3,7 +3,8 @@ import{CloudSun,ChevronDown,MapPin,RefreshCw,Sun,Thermometer,ThermometerSnowflak
 import*as echarts from"echarts";
 import{archive,baseline,forecast,searchLocations}from"./api";
 import type{Location,WeatherResponse}from"./types";
-import{fmt,fmtFull,fmtWeekdayDate,icon,label,localToday,hourLabel}from"./weather";
+import{fmt,fmtWeekdayDate,icon,label,localToday,hourLabel}from"./weather";
+import RadarSection from"./RadarSection";
 import"./styles.css";
 
 const fallback:Location={id:2267057,name:"Lisbon",country:"Portugal",country_code:"PT",latitude:38.7223,longitude:-9.1393,timezone:"Europe/Lisbon"};
@@ -81,7 +82,7 @@ function TemperatureChart({observed,typical,forecastPoints,unit,showForecast,sho
       }};
     }
 
-    c.setOption({animationDuration:450,tooltip:{trigger:"axis",backgroundColor:"#081522",borderColor:"#29425e",textStyle:{color:"#fff"},axisPointer:{lineStyle:{color:"#49647e"}},formatter:(p:any[])=>{const rows=p.filter(x=>x.value?.[1]!=null&&!String(x.seriesName).startsWith("__"));if(!rows.length)return"";return `<div style="font-weight:700;margin-bottom:6px">${fmtFull(String(rows[0].axisValue))}</div>`+rows.map(x=>`<div style="display:flex;gap:7px;align-items:center"><span style="width:8px;height:8px;border-radius:50%;background:${x.color};display:inline-block"></span>${x.seriesName}<b style="margin-left:auto">${(+x.value[1]).toFixed(1)}${unit}</b></div>`).join("")}},grid:{left:8,right:18,top:24,bottom:74,containLabel:true},xAxis:{type:"category",boundaryGap:false,data:dates,axisLabel:{color:"#71859d",interval:(index:number,_value:string)=>Number(dates[index]?.slice(8,10))===1,formatter:(v:string)=>monthLabel(v)},axisLine:{lineStyle:{color:"#26394d"}}},yAxis:{type:"value",scale:true,axisLabel:{color:"#71859d",formatter:`{value}${unit}`},splitLine:{lineStyle:{color:"rgba(150,170,200,.09)"}}},dataZoom:[{type:"slider",start:0,end:100,height:22,bottom:8,showDetail:false,borderColor:"#26394d",backgroundColor:"#091725",fillerColor:"rgba(85,183,255,.16)",handleStyle:{color:"#55b7ff",borderColor:"#55b7ff"},moveHandleStyle:{color:"#344b63"}},{type:"inside",start:0,end:100}],series});
+    c.setOption({animationDuration:450,tooltip:{show:false},grid:{left:8,right:18,top:24,bottom:74,containLabel:true},xAxis:{type:"category",boundaryGap:false,data:dates,axisLabel:{color:"#71859d",interval:(index:number,_value:string)=>Number(dates[index]?.slice(8,10))===1,formatter:(v:string)=>monthLabel(v)},axisLine:{lineStyle:{color:"#26394d"}}},yAxis:{type:"value",scale:true,axisLabel:{color:"#71859d",formatter:`{value}${unit}`},splitLine:{lineStyle:{color:"rgba(150,170,200,.09)"}}},dataZoom:[{type:"slider",start:0,end:100,height:22,bottom:8,showDetail:false,borderColor:"#26394d",backgroundColor:"#091725",fillerColor:"rgba(85,183,255,.16)",handleStyle:{color:"#55b7ff",borderColor:"#55b7ff"},moveHandleStyle:{color:"#344b63"}},{type:"inside",start:0,end:100}],series});
 
     // When the visible range sits entirely inside one calendar month, show that month's name
     // centered along the axis — the boundary dividers alone aren't visible unless a month edge
@@ -115,7 +116,7 @@ function TemperatureChart({observed,typical,forecastPoints,unit,showForecast,sho
 }
 
 function Legend({showObserved,showForecast}:{showObserved:boolean;showForecast:boolean}){
-  return <div className="legend">{showObserved&&<span><i className="legendLine observedLine"/>Observed</span>}{showForecast&&<span><i className="legendLine forecastLine"/>Forecast</span>}<span><i className="legendLine typicalLine"/>Typical 1991–2020</span><small>Hover for exact values · drag the range handles to focus a period</small></div>
+  return <div className="legend">{showObserved&&<span><i className="legendLine observedLine"/>Observed</span>}{showForecast&&<span><i className="legendLine forecastLine"/>Forecast</span>}<span><i className="legendLine typicalLine"/>Typical 1991–2020</span></div>
 }
 
 function RangeToggle({showRange,setShowRange}:{showRange:boolean;setShowRange:(v:boolean)=>void}){
@@ -133,13 +134,13 @@ function HourlyChart({hours,unit}:{hours:{time:string;temp:number;feels:number;r
     const el=chartRef.current;
     if(!el)return;
     const c=echarts.init(el);
-    c.setOption({animationDuration:400,tooltip:{trigger:"axis",backgroundColor:"#081522",borderColor:"#29425e",textStyle:{color:"#fff"},axisPointer:{lineStyle:{color:"#49647e"}},formatter:(p:any[])=>{const rows=p.filter(x=>x.value?.[1]!=null);if(!rows.length)return"";return `<div style="font-weight:700;margin-bottom:6px">${hourLabel(String(rows[0].axisValue))}</div>`+rows.map(x=>`<div style="display:flex;gap:7px;align-items:center"><span style="width:8px;height:8px;border-radius:50%;background:${x.color};display:inline-block"></span>${x.seriesName}<b style="margin-left:auto">${x.seriesName==="Chance of rain"?Math.round(+x.value[1])+"%":(+x.value[1]).toFixed(1)+unit}</b></div>`).join("")}},grid:{left:6,right:12,top:18,bottom:26,containLabel:true},xAxis:{type:"category",boundaryGap:false,data:hours.map(h=>h.time),axisTick:{interval:0},axisLabel:{color:"#71859d",interval:0,fontSize:9,formatter:(v:string)=>hourLabel(v)},axisLine:{lineStyle:{color:"#26394d"}}},yAxis:[
+    c.setOption({animationDuration:400,tooltip:{show:false},grid:{left:6,right:12,top:18,bottom:26,containLabel:true},xAxis:{type:"category",boundaryGap:false,data:hours.map(h=>h.time),axisTick:{interval:0},axisLabel:{color:"#71859d",interval:0,fontSize:9,formatter:(v:string)=>hourLabel(v)},axisLine:{lineStyle:{color:"#26394d"}}},yAxis:[
       {type:"value",scale:true,axisLabel:{color:"#71859d",formatter:`{value}${unit}`},splitLine:{lineStyle:{color:"rgba(150,170,200,.09)"}}},
       {type:"value",min:0,max:100,show:false}
     ],series:[
       {name:"Chance of rain",type:"line",yAxisIndex:1,data:hours.map(h=>[h.time,h.rain]),smooth:.25,showSymbol:false,lineStyle:{opacity:0},areaStyle:{color:"rgba(111,190,201,.22)"},z:1},
-      {name:"Temperature",type:"line",data:hours.map(h=>[h.time,h.temp]),smooth:.25,showSymbol:false,lineStyle:{width:3,color:"#55b7ff"},itemStyle:{color:"#55b7ff"},areaStyle:{color:"rgba(85,183,255,.1)"},z:2},
-      {name:"Feels like",type:"line",data:hours.map(h=>[h.time,h.feels]),smooth:.25,showSymbol:false,lineStyle:{width:2,type:"dashed",color:"#f2a65a"},itemStyle:{color:"#f2a65a"},z:2}
+      {name:"Temperature",type:"line",data:hours.map(h=>[h.time,h.temp]),smooth:.25,showSymbol:false,lineStyle:{width:3,color:"#f3b84b"},itemStyle:{color:"#f3b84b"},z:2},
+      {name:"Feels like",type:"line",data:hours.map(h=>[h.time,h.feels]),smooth:.25,showSymbol:false,lineStyle:{width:2.5,color:"#9b8cff"},itemStyle:{color:"#9b8cff"},z:2}
     ]});
     const ro=new ResizeObserver(()=>c.resize());
     ro.observe(el);
@@ -213,8 +214,8 @@ function HourlyDetails({day,hours,sunrise,sunset,timezone,unit,conv}:{day:any;ho
  <HourlyChart hours={hours.map(h=>({time:h.time,temp:conv(h.temp),feels:conv(h.feels),rain:h.rain}))} unit={unit}/>
  <div className="hourlyTableOuter">
    <div className="hourlyLabels">
-     <div className="hlabel hlabel-hour"> </div>
-     <div className="hlabel hlabel-icon"> </div>
+     <div className="hlabel hlabel-hour">Hour</div>
+     <div className="hlabel hlabel-icon">Sky</div>
      <div className="hlabel hlabel-precip">Rain chance</div>
      <div className="hlabel hlabel-temp">Temp</div>
      <div className="hlabel hlabel-feels">Feels like</div>
@@ -314,14 +315,15 @@ function App(){
  return <><header><div className="brand"><span><CloudSun size={21}/></span><b>Weather Dashboard</b><small>weather · climate · context</small></div><div className="controls"><LocationPicker loc={loc} setLoc={setLoc}/><select value={unit} onChange={e=>setUnit(e.target.value)}><option>°C</option><option>°F</option></select></div></header>
  <main><div className="hero"><div><h1>{loc.name}<em>, {loc.country}</em></h1></div><aside><small>LOCAL DATE</small><b>{fmt(localToday(loc.timezone),{weekday:"long",month:"long",day:"numeric",year:"numeric"})}</b></aside></div>
  {err&&<div className="error">{err}</div>}
- <section><div className="head"><div><label>7-DAY FORECAST</label><h2>{daySummaryText||"Select a day to open the full 24-hour forecast."}</h2></div></div><div className="days">{days.map((d,i)=><DayCard key={d.date} d={d} i={i} selected={i===selectedDay} onClick={()=>setSelectedDay(i)} conv={conv}/>)}</div>{selected&&data&&<HourlyDetails day={selected} hours={selectedHours} sunrise={selectedSunrise} sunset={selectedSunset} timezone={data.timezone} unit={unit} conv={conv}/>}</section>
- <section><div className="head"><div><label>ANNUAL TEMPERATURE</label><h2>Temperature through the year</h2><p>Compare observed temperatures with the seasonal baseline and near-term forecast.</p></div><div className="headControls"><RangeToggle showRange={showRange} setShowRange={setShowRange}/><div className="year"><small>YEAR</small><div className="yearRow"><select value={y} onChange={e=>setY(+e.target.value)}>{Array.from({length:41},(_,i)=>yearNow-20+i).map(n=><option key={n}>{n}</option>)}</select><button title="Reset to current year" onClick={()=>setY(yearNow)}><RefreshCw size={15}/></button></div></div></div></div>
+ <section><div className="head"><div className="forecastHead"><label>7-DAY FORECAST</label><h2>{daySummaryText||"Select a day to open the full 24-hour forecast."}</h2></div></div><div className="days">{days.map((d,i)=><DayCard key={d.date} d={d} i={i} selected={i===selectedDay} onClick={()=>setSelectedDay(i)} conv={conv}/>)}</div>{selected&&data&&<HourlyDetails day={selected} hours={selectedHours} sunrise={selectedSunrise} sunset={selectedSunset} timezone={data.timezone} unit={unit} conv={conv}/>}</section>
+ <section><div className="head"><div><label>ANNUAL TEMPERATURE</label><h2>Temperature through the year</h2><p>Compare observed temperatures with the seasonal baseline and near-term forecast.</p></div><div className="headControls"><RangeToggle showRange={showRange} setShowRange={setShowRange}/><div className="year"><small>YEAR</small><div className="yearRow"><select value={y} onChange={e=>setY(+e.target.value)}>{Array.from({length:41},(_,i)=>yearNow-20+i).map(n=><option key={n}>{n}</option>)}</select><button aria-label="Reset to current year" onClick={()=>setY(yearNow)}><RefreshCw size={15}/></button></div></div></div></div>
  <Legend showObserved={showObserved} showForecast={showForecast}/>{loading?<div className="loading">Loading weather data…</div>:<TemperatureChart observed={obs} typical={typical} forecastPoints={future} unit={unit} showForecast={showForecast} showRange={showRange} onVisibleRangeChange={(start,end)=>setVisibleRange(prev=>(prev&&prev.start===start&&prev.end===end)?prev:{start,end})}/>}
  <div className="zoomGuide"><div><b>Focus the chart</b><span>Use the handles below to choose a date range, or scroll inside the chart to zoom.</span></div><span className="rangeHint">◀ drag handles · ▶ drag range</span></div>
  {noteText&&<div className="note">{noteText}</div>}
  <div className="statsBlock"><div className="statsHead"><label>YEAR SUMMARY</label><span>{rangeSummaryLabel(visibleRange,y)}</span></div><div className="stats"><Stat icon={<ThermometerSnowflake/>} title="Coldest" value={visibleMins.length?Math.min(...visibleMins).toFixed(1)+unit:"—"}/><Stat icon={<Thermometer/>} title="Average" value={visibleObs.length?(visibleObs.reduce((a,b)=>a+b.value,0)/visibleObs.length).toFixed(1)+unit:"—"}/><Stat icon={<Sun/>} title="Warmest" value={visibleMaxs.length?Math.max(...visibleMaxs).toFixed(1)+unit:"—"}/></div></div>
  </section>
- <footer>Open-Meteo weather data · historical data uses reanalysis</footer></main></>
+ <RadarSection loc={loc}/>
+ <footer>Open-Meteo weather data · historical data uses reanalysis · Radar by RainViewer</footer></main></>
 }
 function Stat({icon,title,value}:{icon:any;title:string;value:string}){return <div className="stat">{icon}<span><small>{title}</small><b>{value}</b></span></div>}
 export default App;
