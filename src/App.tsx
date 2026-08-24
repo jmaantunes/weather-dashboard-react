@@ -3,7 +3,7 @@ import{CloudSun,ChevronDown,MapPin,RefreshCw,Sun,Thermometer,ThermometerSnowflak
 import*as echarts from"echarts";
 import{archive,baseline,forecast,searchLocations}from"./api";
 import type{Location,WeatherResponse}from"./types";
-import{fmt,fmtWeekdayDate,icon,label,localToday,hourLabel}from"./weather";
+import{fmt,fmtWeekdayDate,icon,label,localToday}from"./weather";
 import"./styles.css";
 
 const fallback:Location={id:2267057,name:"Lisbon",country:"Portugal",country_code:"PT",latitude:38.7223,longitude:-9.1393,timezone:"Europe/Lisbon"};
@@ -83,8 +83,13 @@ function TemperatureChart({observed,typical,forecastPoints,unit,showForecast,sho
     // When the visible range sits entirely inside one calendar month, show that month's name
     // centered along the axis — the boundary dividers alone aren't visible unless a month edge
     // happens to be in view, so this covers the "zoomed into the middle of a month" case.
+    // Give the caption a stable id and use explicit $action: setOption merges the "graphic"
+    // array by index, so passing [] here would NOT remove a previously-added element (it just
+    // has nothing to merge onto index 0, leaving the old one behind) — that's what caused the
+    // month name to stick around after zooming back out, and to appear stale after dragging
+    // the range into a different month. An explicit remove/merge action fixes both.
     const setMonthCaption=(text:string|null)=>{
-      c.setOption({graphic:text?[{type:"text",silent:true,left:"center",bottom:56,style:{text,font:"700 13px \"Space Grotesk\"",fill:"rgba(237,245,255,.55)"}}]:[]});
+      c.setOption({graphic:[{id:"monthCaption",type:"text",$action:text?"merge":"remove",silent:true,left:"center",bottom:56,style:{text:text||"",font:"700 13px \"Space Grotesk\"",fill:"rgba(237,245,255,.55)"}}]});
     };
 
     const reportRange=(startPct:number,endPct:number)=>{
@@ -123,7 +128,17 @@ function DayCard({d,i,selected,onClick,conv}:{d:any;i:number;selected:boolean;on
  return <button className={`day ${selected?"selected":""}`} onClick={onClick}><small>{i===0?"Today":new Date(d.date+"T12:00:00").toLocaleDateString(undefined,{weekday:"short"})}</small><b>{icon(d.code)}</b><strong><small className="hl">H</small>{Math.round(conv(d.max))}°</strong><span><small className="hl">L</small>{Math.round(conv(d.min))}°</span><p>{label(d.code)}</p><small className="dayMeta"><span>💧 {Math.round(d.rain)}%</span> · <span>{Math.round(d.wind)} km/h</span></small></button>
 }
 
-/** Hour-by-hour temperature chart. */
+/** Wall-clock timestamp for an hourly point, as a plain number so the axis can place it
+ * continuously (echarts "time" axis) instead of snapping to the nearest hourly tick. The
+ * strings from Open-Meteo have no offset, so this is a self-consistent local coordinate —
+ * every timestamp in a given chart is parsed the same way, so relative positions (including
+ * the live "now" marker below) come out correct regardless of the browser's own timezone. */
+const ts=(s:string)=>+new Date(s);
+const hourFmt=(t:number)=>{const d=new Date(t);const h=d.getHours();const period=h<12?"AM":"PM";const h12=h%12===0?12:h%12;return`${h12} ${period}`};
+
+/** Hour-by-hour temperature chart. Past hours render dotted; the curve and its fill are
+ * colored on a cold→hot gradient rather than one flat color, and a "now" marker sits at the
+ * exact current minute rather than snapping to the nearest hourly sample. */
 function HourlyChart({hours,unit,timezone,selectedDate,mode}:{hours:{time:string;temp:number;feels:number}[];unit:string;timezone:string;selectedDate:string;mode:"actual"|"feels"}){
   const chartRef=useRef<HTMLDivElement|null>(null);
   const[clock,setClock]=useState(0);
@@ -131,42 +146,86 @@ function HourlyChart({hours,unit,timezone,selectedDate,mode}:{hours:{time:string
   useEffect(()=>{
     const el=chartRef.current;if(!el||!hours.length)return;
     const c=echarts.init(el);
-    const parts=new Intl.DateTimeFormat("en-CA",{timeZone:timezone,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",hourCycle:"h23"}).formatToParts(new Date(clock||Date.now()));
+    const parts=new Intl.DateTimeFormat("en-CA",{timeZone:timezone,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hourCycle:"h23"}).formatToParts(new Date(clock||Date.now()));
     const part=(t:string)=>parts.find(x=>x.type===t)?.value||"";
-    const today=localToday(timezone), nowDate=`${part("year")}-${part("month")}-${part("day")}`, nowHour=part("hour");
-    const currentTime=selectedDate===today&&nowDate===today?`${today}T${nowHour}:00`:null;
-    const currentIndex=currentTime?hours.findIndex(h=>h.time===currentTime):-1;
-    const hasCurrent=currentIndex>=0;
-    const dates=hours.map(h=>h.time), values=hours.map(h=>mode==="actual"?h.temp:h.feels);
-    const lowIndex=values.indexOf(Math.min(...values)), highIndex=values.indexOf(Math.max(...values));
-    const width=el.clientWidth, labelStep=width>=700?1:width>=500?2:4;
-    const axis={type:"category",boundaryGap:false,data:dates,axisTick:{interval:0,length:4,lineStyle:{color:"#52687e"}},axisLabel:{color:"#8ea0b3",interval:(idx:number)=>idx%labelStep===0||idx===dates.length-1,fontSize:10,hideOverlap:true,formatter:(v:string)=>hourLabel(v)},axisLine:{lineStyle:{color:"#31465c"}}};
-    const currentMark=hasCurrent?{symbol:["none","none"],silent:true,animation:false,lineStyle:{color:"rgba(232,239,246,.72)",width:1.2,type:"dotted"},label:{show:false},data:[{xAxis:dates[currentIndex]}]}:undefined;
-    const gradient=new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:mode==="actual"?"rgba(79,171,255,.22)":"rgba(71,207,190,.18)"},{offset:.7,color:mode==="actual"?"rgba(255,151,76,.07)":"rgba(71,207,190,.04)"},{offset:1,color:"rgba(0,0,0,0)"}]);
-    const base={name:mode==="actual"?"Actual":"Feels like",type:"line",data:hours.map(h=>[h.time,mode==="actual"?h.temp:h.feels]),smooth:.22,showSymbol:false,lineStyle:{width:3,color:mode==="actual"?"#62b7ff":"#4ed0be"},itemStyle:{color:mode==="actual"?"#62b7ff":"#4ed0be"},areaStyle:{color:gradient},markLine:currentMark,markPoint:mode==="actual"?{symbol:"circle",symbolSize:7,silent:true,label:{show:true,color:"#edf5fc",fontFamily:"Space Grotesk",fontSize:12,fontWeight:700,formatter:(p:any)=>p.data.name},data:[{name:"L",coord:[hours[lowIndex]?.time,values[lowIndex]],itemStyle:{color:"#55aaff",borderColor:"#071624",borderWidth:2},label:{position:"bottom",offset:[0,5]}},{name:"H",coord:[hours[highIndex]?.time,values[highIndex]],itemStyle:{color:"#ff9d5c",borderColor:"#071624",borderWidth:2},label:{position:"top",offset:[0,-5]}}]}:undefined,z:3};
-    const past=hasCurrent?{name:"__pastCurve",type:"line",data:hours.map((h,i)=>i<=currentIndex?[h.time,values[i]]:[h.time,null]),connectNulls:false,smooth:.22,showSymbol:false,lineStyle:{width:3,type:"dotted",color:mode==="actual"?"#62b7ff":"#4ed0be",opacity:.58},itemStyle:{opacity:0},areaStyle:{opacity:0},tooltip:{show:false},z:4}:null;
-    const shade=hasCurrent?{name:"__pastShade",type:"line",data:hours.map(h=>[h.time,null]),showSymbol:false,lineStyle:{opacity:0},areaStyle:{opacity:0},markArea:{silent:true,itemStyle:{color:new echarts.graphic.LinearGradient(0,0,1,0,[{offset:0,color:"rgba(1,7,13,.60)"},{offset:.68,color:"rgba(1,7,13,.42)"},{offset:1,color:"rgba(1,7,13,.08)"}])},data:[[{xAxis:dates[0]},{xAxis:dates[currentIndex]}]]},tooltip:{show:false},z:20}:null;
-    c.setOption({animationDuration:300,tooltip:{show:true,trigger:"axis",axisPointer:{type:"line",lineStyle:{color:"rgba(224,235,246,.28)",width:1}},backgroundColor:"rgba(7,18,30,.96)",borderColor:"rgba(194,216,239,.16)",textStyle:{color:"#eaf2f8",fontFamily:"DM Sans",fontSize:11},formatter:(params:any[])=>{const row=params.find(p=>p.seriesName!=="__pastShade"&&p.seriesName!=="__pastCurve"&&p.value?.[1]!=null);if(!row)return"";const p=hours.find(h=>h.time===row.axisValue);if(!p)return"";const value=mode==="actual"?p.temp:p.feels;return `<div style="font-weight:700;margin-bottom:6px">${hourLabel(row.axisValue)}</div><div style="display:flex;gap:10px;justify-content:space-between"><span>${mode==="actual"?"Actual":"Feels like"}</span><b>${Math.round(value)}${unit}</b></div>`;}},grid:{left:46,right:14,top:34,bottom:32,containLabel:false},xAxis:axis,yAxis:{type:"value",scale:true,axisLabel:{color:"#8ea0b3",fontSize:10,formatter:`{value}${unit}`},splitLine:{lineStyle:{color:"rgba(150,170,200,.10)"}}},series:[base,past,shade].filter(Boolean)});
+    const today=localToday(timezone), nowDate=`${part("year")}-${part("month")}-${part("day")}`;
+    const isToday=selectedDate===today&&nowDate===today;
+    const nowTs=isToday?ts(`${nowDate}T${part("hour")}:${part("minute")}`):null;
+
+    const times=hours.map(h=>ts(h.time)), values=hours.map(h=>mode==="actual"?h.temp:h.feels);
+    const vmin=Math.min(...values), vmax=Math.max(...values);
+    const palette=mode==="actual"?ACTUAL_PALETTE:FEELS_PALETTE;
+    const scale=colorScale(palette);
+    const colorAt=(v:number)=>scale(vmax>vmin?(v-vmin)/(vmax-vmin):.5);
+    const lowIndex=values.indexOf(vmin), highIndex=values.indexOf(vmax);
+
+    // Interpolated value at the exact current moment, so the dotted "past" curve reaches
+    // precisely to the live marker instead of stopping at the last full-hour sample.
+    let nowIdx=-1, nowVal:number|null=null;
+    if(nowTs!=null){
+      nowIdx=times.findIndex(t=>t>nowTs)-1;
+      if(nowIdx>=0&&nowIdx<times.length-1){
+        const t0=times[nowIdx],t1=times[nowIdx+1],f=(nowTs-t0)/(t1-t0);
+        nowVal=values[nowIdx]+(values[nowIdx+1]-values[nowIdx])*f;
+      }else if(nowIdx>=times.length-1){nowIdx=times.length-1;nowVal=values[nowIdx]}
+    }
+    const hasCurrent=nowTs!=null&&nowVal!=null;
+
+    const mainData=times.map((t,i)=>[t,values[i]]);
+    const pastData=hasCurrent?[...times.slice(0,nowIdx+1).map((t,i)=>[t,values[i]]),[nowTs,nowVal]]:[];
+
+    const currentMark=hasCurrent?{symbol:["none","none"],silent:true,animation:false,lineStyle:{color:"rgba(232,239,246,.75)",width:1.2,type:"dashed"},label:{show:false},data:[{xAxis:nowTs}]}:undefined;
+
+    const base:any={name:mode==="actual"?"Actual":"Feels like",type:"line",data:mainData,smooth:.22,showSymbol:false,lineStyle:{width:3},itemStyle:{color:palette[palette.length-1]},areaStyle:mode==="actual"?{opacity:.4}:{opacity:0},markLine:currentMark,markPoint:mode==="actual"?{symbol:"circle",symbolSize:6,silent:true,label:{show:true,fontFamily:"Space Grotesk",fontSize:12,fontWeight:700,formatter:(p:any)=>p.data.name},data:[
+      {name:"L",coord:[times[lowIndex],values[lowIndex]],itemStyle:{color:"#0c1a2a",borderColor:colorAt(values[lowIndex]),borderWidth:2},label:{position:"top",offset:[0,-10],color:colorAt(values[lowIndex])}},
+      {name:"H",coord:[times[highIndex],values[highIndex]],itemStyle:{color:"#0c1a2a",borderColor:colorAt(values[highIndex]),borderWidth:2},label:{position:"top",offset:[0,-10],color:colorAt(values[highIndex])}}
+    ]}:undefined,z:3};
+    const past:any=hasCurrent?{name:"__pastCurve",type:"line",data:pastData,smooth:.22,showSymbol:false,lineStyle:{width:3,type:"dotted"},itemStyle:{opacity:0},areaStyle:{opacity:0},tooltip:{show:false},z:4}:null;
+
+    c.setOption({
+      animationDuration:300,
+      tooltip:{show:true,trigger:"axis",axisPointer:{type:"line",lineStyle:{color:"rgba(224,235,246,.28)",width:1}},backgroundColor:"rgba(7,18,30,.96)",borderColor:"rgba(194,216,239,.16)",textStyle:{color:"#eaf2f8",fontFamily:"DM Sans",fontSize:11},formatter:(params:any[])=>{const row=params.find(p=>p.seriesName!=="__pastCurve"&&p.value?.[1]!=null);if(!row)return"";return`<div style="font-weight:700;margin-bottom:6px">${hourFmt(row.value[0])}</div><div style="display:flex;gap:10px;justify-content:space-between"><span>${mode==="actual"?"Actual":"Feels like"}</span><b>${Math.round(row.value[1])}${unit}</b></div>`}},
+      grid:{left:46,right:14,top:34,bottom:32,containLabel:false},
+      xAxis:{type:"time",min:times[0],max:times[times.length-1],axisTick:{lineStyle:{color:"#52687e"}},axisLabel:{color:"#8ea0b3",fontSize:10,hideOverlap:true,formatter:hourFmt},axisLine:{lineStyle:{color:"#31465c"}}},
+      yAxis:{type:"value",scale:true,axisLabel:{color:"#8ea0b3",fontSize:10,formatter:`{value}${unit}`},splitLine:{lineStyle:{color:"rgba(150,170,200,.10)"}}},
+      visualMap:{show:false,type:"continuous",min:vmin,max:vmax,dimension:1,seriesIndex:past?[0,1]:[0],inRange:{color:palette}},
+      series:[base,past].filter(Boolean)
+    });
     const ro=new ResizeObserver(()=>c.resize());ro.observe(el);return()=>{ro.disconnect();c.dispose()};
   },[hours,unit,timezone,selectedDate,clock,mode]);
   return <div className="hourlyChart" ref={chartRef}/>;
 }
 
-/** Probability chart with weather-type-aware labels and a live current-hour divider. */
+/** Probability chart with weather-type-aware labels and a live current-time divider placed
+ * at the exact minute (continuous time axis), not snapped to the nearest hourly sample. */
 function PrecipitationChart({hours,timezone,selectedDate}:{hours:{time:string;rain:number;code:number}[];timezone:string;selectedDate:string}){
   const chartRef=useRef<HTMLDivElement|null>(null);const[clock,setClock]=useState(0);
   useEffect(()=>{setClock(Date.now());const id=window.setInterval(()=>setClock(Date.now()),60_000);return()=>window.clearInterval(id)},[selectedDate,timezone]);
   useEffect(()=>{const el=chartRef.current;if(!el||!hours.length)return;const c=echarts.init(el);
-    const parts=new Intl.DateTimeFormat("en-CA",{timeZone:timezone,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",hourCycle:"h23"}).formatToParts(new Date(clock||Date.now()));const part=(t:string)=>parts.find(x=>x.type===t)?.value||"";
-    const today=localToday(timezone),nowDate=`${part("year")}-${part("month")}-${part("day")}`,nowHour=part("hour"),currentTime=selectedDate===today&&nowDate===today?`${today}T${nowHour}:00`:null,currentIndex=currentTime?hours.findIndex(h=>h.time===currentTime):-1,hasCurrent=currentIndex>=0;
-    const dates=hours.map(h=>h.time),width=el.clientWidth,labelStep=width>=700?1:width>=500?2:4;
-    const line={name:"Chance of precipitation",type:"line",data:hours.map(h=>[h.time,h.rain]),smooth:.2,connectNulls:true,showSymbol:false,lineStyle:{width:3,color:"#63b8ff"},itemStyle:{color:"#63b8ff"},areaStyle:{color:new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:"rgba(99,184,255,.30)"},{offset:.6,color:"rgba(99,184,255,.10)"},{offset:1,color:"rgba(255,102,76,0)"}])},markLine:hasCurrent?{symbol:["none","none"],silent:true,animation:false,lineStyle:{color:"rgba(232,239,246,.72)",width:1.2,type:"dotted"},label:{show:false},data:[{xAxis:dates[currentIndex]}]}:undefined,z:3};
-    const shade=hasCurrent?{name:"__pastShade",type:"line",data:hours.map(h=>[h.time,null]),showSymbol:false,lineStyle:{opacity:0},areaStyle:{opacity:0},markArea:{silent:true,itemStyle:{color:new echarts.graphic.LinearGradient(0,0,1,0,[{offset:0,color:"rgba(1,7,13,.55)"},{offset:.7,color:"rgba(1,7,13,.34)"},{offset:1,color:"rgba(1,7,13,.06)"}])},data:[[{xAxis:dates[0]},{xAxis:dates[currentIndex]}]]},tooltip:{show:false},z:20}:null;
-    c.setOption({animationDuration:300,tooltip:{show:true,trigger:"axis",axisPointer:{type:"line",lineStyle:{color:"rgba(224,235,246,.28)"}},backgroundColor:"rgba(7,18,30,.96)",borderColor:"rgba(194,216,239,.16)",textStyle:{color:"#eaf2f8",fontFamily:"DM Sans",fontSize:11},formatter:(params:any[])=>{const row=params.find(p=>p.seriesName==="Chance of precipitation");if(!row)return"";return `<div style="font-weight:700;margin-bottom:6px">${hourLabel(row.axisValue)}</div><b>${Math.round(row.value[1])}%</b>`;}},grid:{left:46,right:14,top:18,bottom:32,containLabel:false},xAxis:{type:"category",boundaryGap:false,data:dates,axisTick:{interval:0},axisLabel:{color:"#8ea0b3",interval:(idx:number)=>idx%labelStep===0||idx===dates.length-1,fontSize:10,hideOverlap:true,formatter:(v:string)=>hourLabel(v)},axisLine:{lineStyle:{color:"#31465c"}}},yAxis:{type:"value",min:0,max:100,interval:25,axisLabel:{color:"#8ea0b3",fontSize:10,formatter:"{value}%"},splitLine:{lineStyle:{color:"rgba(150,170,200,.10)"}}},series:[line,shade].filter(Boolean)});
+    const parts=new Intl.DateTimeFormat("en-CA",{timeZone:timezone,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hourCycle:"h23"}).formatToParts(new Date(clock||Date.now()));const part=(t:string)=>parts.find(x=>x.type===t)?.value||"";
+    const today=localToday(timezone),nowDate=`${part("year")}-${part("month")}-${part("day")}`,isToday=selectedDate===today&&nowDate===today;
+    const nowTs=isToday?ts(`${nowDate}T${part("hour")}:${part("minute")}`):null;
+    const times=hours.map(h=>ts(h.time));
+    const hasCurrent=nowTs!=null&&nowTs>=times[0]&&nowTs<=times[times.length-1];
+    const line={name:"Chance of precipitation",type:"line",data:times.map((t,i)=>[t,hours[i].rain]),smooth:.2,connectNulls:true,showSymbol:false,lineStyle:{width:3,color:"#63b8ff"},itemStyle:{color:"#63b8ff"},areaStyle:{color:new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:"rgba(99,184,255,.30)"},{offset:.6,color:"rgba(99,184,255,.10)"},{offset:1,color:"rgba(255,102,76,0)"}])},markLine:hasCurrent?{symbol:["none","none"],silent:true,animation:false,lineStyle:{color:"rgba(232,239,246,.75)",width:1.2,type:"dashed"},label:{show:false},data:[{xAxis:nowTs}]}:undefined,z:3};
+    const shade=hasCurrent?{name:"__pastShade",type:"line",data:times.map(t=>[t,null]),showSymbol:false,lineStyle:{opacity:0},areaStyle:{opacity:0},markArea:{silent:true,itemStyle:{color:new echarts.graphic.LinearGradient(0,0,1,0,[{offset:0,color:"rgba(1,7,13,.55)"},{offset:.7,color:"rgba(1,7,13,.34)"},{offset:1,color:"rgba(1,7,13,.06)"}])},data:[[{xAxis:times[0]},{xAxis:nowTs}]]},tooltip:{show:false},z:20}:null;
+    c.setOption({animationDuration:300,tooltip:{show:true,trigger:"axis",axisPointer:{type:"line",lineStyle:{color:"rgba(224,235,246,.28)"}},backgroundColor:"rgba(7,18,30,.96)",borderColor:"rgba(194,216,239,.16)",textStyle:{color:"#eaf2f8",fontFamily:"DM Sans",fontSize:11},formatter:(params:any[])=>{const row=params.find(p=>p.seriesName==="Chance of precipitation");if(!row)return"";return `<div style="font-weight:700;margin-bottom:6px">${hourFmt(row.value[0])}</div><b>${Math.round(row.value[1])}%</b>`;}},grid:{left:46,right:14,top:18,bottom:32,containLabel:false},xAxis:{type:"time",min:times[0],max:times[times.length-1],axisTick:{lineStyle:{color:"#52687e"}},axisLabel:{color:"#8ea0b3",fontSize:10,hideOverlap:true,formatter:hourFmt},axisLine:{lineStyle:{color:"#31465c"}}},yAxis:{type:"value",min:0,max:100,interval:25,axisLabel:{color:"#8ea0b3",fontSize:10,formatter:"{value}%"},splitLine:{lineStyle:{color:"rgba(150,170,200,.10)"}}},series:[line,shade].filter(Boolean)});
     const ro=new ResizeObserver(()=>c.resize());ro.observe(el);return()=>{ro.disconnect();c.dispose()};
   },[hours,timezone,selectedDate,clock]);
   return <div className="precipChart" ref={chartRef}/>;
 }
+
+/** Hex → {r,g,b}. */
+function hexToRgb(h:string){const n=parseInt(h.replace("#",""),16);return{r:(n>>16)&255,g:(n>>8)&255,b:n&255}}
+/** Linear RGB blend between two hex colors, t in [0,1]. */
+function lerpColor(a:string,b:string,t:number){const pa=hexToRgb(a),pb=hexToRgb(b);const r=Math.round(pa.r+(pb.r-pa.r)*t),g=Math.round(pa.g+(pb.g-pa.g)*t),bl=Math.round(pa.b+(pb.b-pa.b)*t);return`rgb(${r},${g},${bl})`}
+/** Builds a t∈[0,1]→color function by walking an evenly-spaced multi-stop palette. */
+function colorScale(colors:string[]){const n=colors.length-1;return(t:number)=>{t=Math.max(0,Math.min(1,t));const seg=t*n;const i=Math.min(n-1,Math.floor(seg));return lerpColor(colors[i],colors[i+1],seg-i)}}
+// Cold→hot palettes for the two hourly curves — "actual" runs steel-blue through amber to
+// red for genuinely hot readings; "feels like" runs a cooler mint→straw scale so the two
+// charts read as related but distinct at a glance.
+const ACTUAL_PALETTE=["#5588e0","#4fb8c4","#e8c04f","#ff8a42","#ff5a4a"];
+const FEELS_PALETTE=["#2fcf9e","#7fdca0","#d8e28a","#f4cf6a"];
 
 function precipColor(p:number):string{
   if(p<10)return"#5c7280";
@@ -209,11 +268,15 @@ function daySummary(dayHours:{time:string;temp:number;rain:number}[],code:number
 
 function hm(s:string){return s.slice(11,16)}
 
-/** Average temperature across the hours between sunrise and sunset, if both are known. */
+/** Average temperature across the hours between sunrise and sunset, if both are known.
+ * Uses minute-level precision, and defensively swaps the two if they arrive out of order
+ * (e.g. right at day boundaries) so the window is never empty. */
 function daytimeAverage(hours:{time:string;temp:number}[],sunrise?:string,sunset?:string):number|null{
   if(!sunrise||!sunset)return null;
-  const sh=Number(sunrise.slice(11,13)),eh=Number(sunset.slice(11,13));
-  const daytime=hours.slice(0,24).filter(h=>{const hh=Number(h.time.slice(11,13));return hh>=sh&&hh<eh});
+  const asHours=(s:string)=>Number(s.slice(11,13))+Number(s.slice(14,16))/60;
+  let sh=asHours(sunrise),eh=asHours(sunset);
+  if(eh<=sh)[sh,eh]=[eh,sh];
+  const daytime=hours.slice(0,24).filter(h=>{const hh=Number(h.time.slice(11,13))+Number(h.time.slice(14,16))/60;return hh>=sh&&hh<eh});
   if(!daytime.length)return null;
   return daytime.reduce((a,h)=>a+h.temp,0)/daytime.length;
 }
@@ -222,7 +285,7 @@ function daytimeAverage(hours:{time:string;temp:number}[],sunrise?:string,sunset
 function HourlyModeToggle({mode,setMode}:{mode:"actual"|"feels";setMode:(v:"actual"|"feels")=>void}){
  return <div className="hourlyModeToggle"><small>VIEW</small><div className="switch"><button type="button" className={mode==="actual"?"active":""} onClick={()=>setMode("actual")}>Actual</button><button type="button" className={mode==="feels"?"active":""} onClick={()=>setMode("feels")}>Feels like</button></div></div>
 }
-function HourlyDetails({day,hours,sunrise,sunset,timezone,unit,conv}:{day:any;hours:{time:string;temp:number;feels:number;rain:number;wind:number;code:number}[];sunrise?:string;sunset?:string;timezone:string;unit:string;conv:(n:number)=>number}){
+function HourlyDetails({day,hours,sunrise,sunset,timezone,cityName,unit,conv}:{day:any;hours:{time:string;temp:number;feels:number;rain:number;wind:number;code:number}[];sunrise?:string;sunset?:string;timezone:string;cityName:string;unit:string;conv:(n:number)=>number}){
  const dayHours=hours.slice(0,24);
  const temps=dayHours.map(h=>h.temp);
  const minIdx=temps.length?temps.indexOf(Math.min(...temps)):-1;
@@ -232,7 +295,7 @@ function HourlyDetails({day,hours,sunrise,sunset,timezone,unit,conv}:{day:any;ho
  const[nowTick,setNowTick]=useState(Date.now());
  useEffect(()=>{const id=window.setInterval(()=>setNowTick(Date.now()),60_000);return()=>window.clearInterval(id)},[timezone,day.date]);
  const currentHourKey=(()=>{const p=new Intl.DateTimeFormat("en-CA",{timeZone:timezone,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",hourCycle:"h23"}).formatToParts(new Date(nowTick));const g=(t:string)=>p.find(x=>x.type===t)?.value||"";const d=`${g("year")}-${g("month")}-${g("day")}`;return d===day.date?`${d}T${g("hour")}:00`:null;})();
- return <div className="hourlyPanel"><div className="hourlyHead"><div><label>HOURLY DETAIL</label><h3>{fmtWeekdayDate(day.date)}</h3></div><span>Local time · {timezone}</span></div>
+ return <div className="hourlyPanel"><div className="hourlyHead"><div><label>HOURLY DETAIL</label><h3>{fmtWeekdayDate(day.date)}</h3></div><span>{cityName} · local time ({timezone})</span></div>
  {(sunrise||sunset||daytimeAvg!=null)&&<div className="dayFacts">
    {sunrise&&<span>☀️ Sunrise {hm(sunrise)}</span>}
    {sunset&&<span>🌇 Sunset {hm(sunset)}</span>}
@@ -343,7 +406,7 @@ function App(){
  return <><header><div className="brand"><span><CloudSun size={21}/></span><b>Weather Dashboard</b><small>weather · climate · context</small></div><div className="controls"><LocationPicker loc={loc} setLoc={setLoc}/><select value={unit} onChange={e=>setUnit(e.target.value)}><option>°C</option><option>°F</option></select></div></header>
  <main><div className="hero"><div><h1>{loc.name}<em>, {loc.country}</em></h1></div><aside><small>LOCAL DATE</small><b>{fmt(localToday(loc.timezone),{weekday:"long",month:"long",day:"numeric",year:"numeric"})}</b></aside></div>
  {err&&<div className="error">{err}</div>}
- <section><div className="head"><div className="forecastHead"><label>7-DAY FORECAST</label><h2>{daySummaryText||"Select a day to open the full 24-hour forecast."}</h2></div></div><div className="days">{days.map((d,i)=><DayCard key={d.date} d={d} i={i} selected={i===selectedDay} onClick={()=>setSelectedDay(i)} conv={conv}/>)}</div>{selected&&data&&<HourlyDetails day={selected} hours={selectedHours} sunrise={selectedSunrise} sunset={selectedSunset} timezone={data.timezone} unit={unit} conv={conv}/>}</section>
+ <section><div className="head"><div className="forecastHead"><label>7-DAY FORECAST</label><h2>{daySummaryText||"Select a day to open the full 24-hour forecast."}</h2></div></div><div className="days">{days.map((d,i)=><DayCard key={d.date} d={d} i={i} selected={i===selectedDay} onClick={()=>setSelectedDay(i)} conv={conv}/>)}</div>{selected&&data&&<HourlyDetails day={selected} hours={selectedHours} sunrise={selectedSunrise} sunset={selectedSunset} timezone={data.timezone} cityName={loc.name} unit={unit} conv={conv}/>}</section>
  <section><div className="head"><div><label>ANNUAL TEMPERATURE</label><h2>Temperature through the year</h2><p>Compare observed temperatures with the seasonal baseline and near-term forecast.</p></div><div className="headControls"><RangeToggle showRange={showRange} setShowRange={setShowRange}/><div className="year"><small>YEAR</small><div className="yearRow"><select value={y} onChange={e=>setY(+e.target.value)}>{Array.from({length:41},(_,i)=>yearNow-20+i).map(n=><option key={n}>{n}</option>)}</select><button aria-label="Reset to current year" onClick={()=>setY(yearNow)}><RefreshCw size={15}/></button></div></div></div></div>
  <Legend showObserved={showObserved} showForecast={showForecast}/>{loading?<div className="loading">Loading weather data…</div>:<TemperatureChart observed={obs} typical={typical} forecastPoints={future} unit={unit} showForecast={showForecast} showRange={showRange} onVisibleRangeChange={(start,end)=>setVisibleRange(prev=>(prev&&prev.start===start&&prev.end===end)?prev:{start,end})}/>}
  <div className="zoomGuide"><div><b>Focus the chart</b><span>Use the handles below to choose a date range, or scroll inside the chart to zoom.</span></div><span className="rangeHint">◀ drag handles · ▶ drag range</span></div>
