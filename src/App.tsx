@@ -4,7 +4,6 @@ import*as echarts from"echarts";
 import{archive,baseline,forecast,searchLocations}from"./api";
 import type{Location,WeatherResponse}from"./types";
 import{fmt,fmtWeekdayDate,icon,label,localToday,hourLabel}from"./weather";
-import RadarSection from"./RadarSection";
 import"./styles.css";
 
 const fallback:Location={id:2267057,name:"Lisbon",country:"Portugal",country_code:"PT",latitude:38.7223,longitude:-9.1393,timezone:"Europe/Lisbon"};
@@ -59,12 +58,12 @@ function TemperatureChart({observed,typical,forecastPoints,unit,showForecast,sho
       ? [
           ...rangeSeries("typical","Typical",typical,"#8293a8","dashed"),
           ...rangeSeries("observed","Observed",observed,"#55b7ff","dashed"),
-          ...(showForecast&&forecastPoints.length?rangeSeries("forecast","Forecast",forecastPoints,"#b08cff","dotted"):[])
+          ...(showForecast&&forecastPoints.length?rangeSeries("forecast","Forecast",forecastPoints,"#ff9d5c","dotted"):[])
         ]
       : [
           {name:"Typical",type:"line",data:typical.map(x=>[x.date,x.value]),smooth:true,showSymbol:false,lineStyle:{type:"dashed",width:2,color:"#8293a8"},itemStyle:{color:"#8293a8"}},
           {name:"Observed",type:"line",data:observed.map(x=>[x.date,x.value]),smooth:.18,showSymbol:false,lineStyle:{width:3,color:"#55b7ff"},itemStyle:{color:"#55b7ff"},areaStyle:{color:"rgba(85,183,255,.08)"}},
-          ...(showForecast&&forecastPoints.length?[{name:"Forecast",type:"line",data:forecastPoints.map(x=>[x.date,x.value]),smooth:.18,showSymbol:false,lineStyle:{type:"dotted",width:3,color:"#b08cff"},itemStyle:{color:"#b08cff"}}]:[])
+          ...(showForecast&&forecastPoints.length?[{name:"Forecast",type:"line",data:forecastPoints.map(x=>[x.date,x.value]),smooth:.18,showSymbol:false,lineStyle:{type:"dotted",width:3,color:"#ff9d5c"},itemStyle:{color:"#ff9d5c"}}]:[])
         ];
 
     // Vertical month-boundary dividers, attached to the first series (always "Typical"/"Typical min"),
@@ -127,26 +126,102 @@ function DayCard({d,i,selected,onClick,conv}:{d:any;i:number;selected:boolean;on
  return <button className={`day ${selected?"selected":""}`} onClick={onClick}><small>{i===0?"Today":new Date(d.date+"T12:00:00").toLocaleDateString(undefined,{weekday:"short"})}</small><b>{icon(d.code)}</b><strong><small className="hl">H</small>{Math.round(conv(d.max))}°</strong><span><small className="hl">L</small>{Math.round(conv(d.min))}°</span><p>{label(d.code)}</p><small className="dayMeta"><span>💧 {Math.round(d.rain)}%</span> · <span>{Math.round(d.wind)} km/h</span></small></button>
 }
 
-/** Compact hour-by-hour temperature curve shown above the hourly detail cards. */
-function HourlyChart({hours,unit}:{hours:{time:string;temp:number;feels:number;rain:number}[];unit:string}){
+/** Hour-by-hour temperature and apparent-temperature chart. */
+function HourlyChart({hours,unit,timezone,selectedDate}:{hours:{time:string;temp:number;feels:number}[];unit:string;timezone:string;selectedDate:string}){
   const chartRef=useRef<HTMLDivElement|null>(null);
+  const[clock,setClock]=useState(0);
+  useEffect(()=>{
+    setClock(Date.now());
+    const id=window.setInterval(()=>setClock(Date.now()),60_000);
+    return()=>window.clearInterval(id);
+  },[selectedDate,timezone]);
   useEffect(()=>{
     const el=chartRef.current;
-    if(!el)return;
+    if(!el||!hours.length)return;
     const c=echarts.init(el);
-    c.setOption({animationDuration:400,tooltip:{show:false},grid:{left:6,right:12,top:18,bottom:26,containLabel:true},xAxis:{type:"category",boundaryGap:false,data:hours.map(h=>h.time),axisTick:{interval:0},axisLabel:{color:"#71859d",interval:0,fontSize:9,formatter:(v:string)=>hourLabel(v)},axisLine:{lineStyle:{color:"#26394d"}}},yAxis:[
-      {type:"value",scale:true,axisLabel:{color:"#71859d",formatter:`{value}${unit}`},splitLine:{lineStyle:{color:"rgba(150,170,200,.09)"}}},
-      {type:"value",min:0,max:100,show:false}
-    ],series:[
-      {name:"Chance of rain",type:"line",yAxisIndex:1,data:hours.map(h=>[h.time,h.rain]),smooth:.25,showSymbol:false,lineStyle:{opacity:0},areaStyle:{color:"rgba(111,190,201,.22)"},z:1},
-      {name:"Temperature",type:"line",data:hours.map(h=>[h.time,h.temp]),smooth:.25,showSymbol:false,lineStyle:{width:3,color:"#f3b84b"},itemStyle:{color:"#f3b84b"},z:2},
-      {name:"Feels like",type:"line",data:hours.map(h=>[h.time,h.feels]),smooth:.25,showSymbol:false,lineStyle:{width:2.5,color:"#9b8cff"},itemStyle:{color:"#9b8cff"},z:2}
-    ]});
+    const today=localToday(timezone);
+    const nowParts=new Intl.DateTimeFormat("en-CA",{timeZone:timezone,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",hourCycle:"h23"}).formatToParts(new Date(clock||Date.now()));
+    const part=(type:string)=>nowParts.find(x=>x.type===type)?.value||"";
+    const nowDate=`${part("year")}-${part("month")}-${part("day")}`;
+    const nowHour=part("hour");
+    const currentTime=selectedDate===today&&nowDate===today?`${today}T${nowHour}:00`:null;
+    const hasCurrent=!!currentTime&&hours.some(h=>h.time===currentTime);
+    const labelStep=el.clientWidth<520?4:el.clientWidth<800?3:2;
+    const commonAxis={type:"category",boundaryGap:false,data:hours.map(h=>h.time),axisTick:{interval:0},axisLabel:{color:"#8ea0b3",interval:(idx:number)=>idx===0||idx===hours.length-1||idx%labelStep===0,fontSize:10,hideOverlap:true,formatter:(v:string)=>hourLabel(v)},axisLine:{lineStyle:{color:"#31465c"}}};
+    const shade=hasCurrent?[{xAxis:hours[0].time},{xAxis:currentTime}]:null;
+    const markLine=hasCurrent?{symbol:["none","none"],silent:true,animation:false,lineStyle:{color:"rgba(229,238,247,.72)",width:1.5,type:"dotted"},label:{show:false},data:[{xAxis:currentTime}]}:undefined;
+    c.setOption({
+      animationDuration:350,
+      tooltip:{show:true,trigger:"axis",axisPointer:{type:"line",lineStyle:{color:"rgba(224,235,246,.28)",width:1}},backgroundColor:"rgba(7,18,30,.94)",borderColor:"rgba(194,216,239,.16)",textStyle:{color:"#eaf2f8",fontFamily:"DM Sans",fontSize:11},formatter:(params:any[])=>{
+        const rows=params.filter(p=>p.seriesName!=="__currentShade");
+        if(!rows.length)return"";
+        const time=rows[0]?.axisValue as string;
+        const label=time?hourLabel(time):"";
+        return `<div style="font-weight:700;margin-bottom:6px">${label}</div>`+rows.map(p=>`<div style="display:flex;gap:8px;justify-content:space-between"><span>${p.marker}${p.seriesName}</span><b>${Math.round(p.value[1])}${unit}</b></div>`).join("");
+      }},
+      grid:{left:46,right:14,top:22,bottom:30,containLabel:false},
+      xAxis:commonAxis,
+      yAxis:{type:"value",scale:true,axisLabel:{color:"#8ea0b3",fontSize:10,formatter:`{value}${unit}`},splitLine:{lineStyle:{color:"rgba(150,170,200,.10)"}}},
+      series:[
+        {name:"Temperature",type:"line",data:hours.map(h=>[h.time,h.temp]),smooth:.28,showSymbol:false,lineStyle:{width:3,color:"#ffb45c"},itemStyle:{color:"#ffb45c"},areaStyle:{color:new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:"rgba(255,180,92,.20)"},{offset:.72,color:"rgba(255,180,92,.055)"},{offset:1,color:"rgba(255,180,92,0)"}])},z:3,markLine},
+        {name:"Feels like",type:"line",data:hours.map(h=>[h.time,h.feels]),smooth:.28,showSymbol:false,lineStyle:{width:2.5,color:"#67d6c1"},itemStyle:{color:"#67d6c1"},areaStyle:{color:new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:"rgba(103,214,193,.12)"},{offset:.78,color:"rgba(103,214,193,.025)"},{offset:1,color:"rgba(103,214,193,0)"}])},z:2},
+        ...(shade?[{name:"__currentShade",type:"line",data:hours.map(h=>[h.time,null]),showSymbol:false,lineStyle:{opacity:0},areaStyle:{opacity:0},markArea:{silent:true,itemStyle:{color:"rgba(2,8,14,.36)"},data:[shade]},tooltip:{show:false},z:10}]:[])
+      ]
+    });
     const ro=new ResizeObserver(()=>c.resize());
     ro.observe(el);
     return()=>{ro.disconnect();c.dispose()};
-  },[hours,unit]);
+  },[hours,unit,timezone,selectedDate,clock]);
   return <div className="hourlyChart" ref={chartRef}/>;
+}
+
+/** Probability chart with weather-type-aware labels and a live current-hour divider. */
+function PrecipitationChart({hours,timezone,selectedDate}:{hours:{time:string;rain:number;code:number}[];timezone:string;selectedDate:string}){
+  const chartRef=useRef<HTMLDivElement|null>(null);
+  const[clock,setClock]=useState(0);
+  useEffect(()=>{
+    setClock(Date.now());
+    const id=window.setInterval(()=>setClock(Date.now()),60_000);
+    return()=>window.clearInterval(id);
+  },[selectedDate,timezone]);
+  useEffect(()=>{
+    const el=chartRef.current;if(!el||!hours.length)return;
+    const c=echarts.init(el);
+    const today=localToday(timezone);
+    const parts=new Intl.DateTimeFormat("en-CA",{timeZone:timezone,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",hourCycle:"h23"}).formatToParts(new Date(clock||Date.now()));
+    const part=(type:string)=>parts.find(x=>x.type===type)?.value||"";
+    const nowDate=`${part("year")}-${part("month")}-${part("day")}`;
+    const nowHour=part("hour");
+    const currentTime=selectedDate===today&&nowDate===today?`${today}T${nowHour}:00`:null;
+    const hasCurrent=!!currentTime&&hours.some(h=>h.time===currentTime);
+    const typeFor=(code:number)=>code>=71&&code<=77||code===85||code===86?"Snow":code>=95?"Storm / hail risk":"Rain";
+    const types=["Rain","Snow","Storm / hail risk"];
+    const activeTypes=types.filter(type=>hours.some(h=>typeFor(h.code)===type&&h.rain>0));
+    const series=activeTypes.map(type=>{
+      const si=types.indexOf(type);
+      return {
+        name:type,type:"line",data:hours.map(h=>[h.time,typeFor(h.code)===type?h.rain:null]),connectNulls:false,smooth:.2,showSymbol:false,lineStyle:{width:3,color:["#55b8ff","#8dc7ff","#ff7f73"][si]},itemStyle:{color:["#55b8ff","#8dc7ff","#ff7f73"][si]},areaStyle:{color:new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:["rgba(85,184,255,.28)","rgba(141,199,255,.28)","rgba(255,127,115,.30)"][si]},{offset:.68,color:["rgba(85,184,255,.07)","rgba(141,199,255,.07)","rgba(255,127,115,.08)"][si]},{offset:1,color:"rgba(0,0,0,0)"}])},z:3-si
+      };
+    });
+    const shade=hasCurrent?[{xAxis:hours[0].time},{xAxis:currentTime}]:null;
+    c.setOption({
+      animationDuration:350,
+      tooltip:{show:true,trigger:"axis",axisPointer:{type:"line",lineStyle:{color:"rgba(224,235,246,.28)",width:1}},backgroundColor:"rgba(7,18,30,.94)",borderColor:"rgba(194,216,239,.16)",textStyle:{color:"#eaf2f8",fontFamily:"DM Sans",fontSize:11},formatter:(params:any[])=>{
+        const rows=params.filter(p=>p.value?.[1]!=null);
+        if(!rows.length)return"";
+        const time=rows[0]?.axisValue as string;
+        return `<div style="font-weight:700;margin-bottom:6px">${hourLabel(time)}</div>`+rows.map(p=>`<div style="display:flex;gap:8px;justify-content:space-between"><span>${p.marker}${p.seriesName}</span><b>${Math.round(p.value[1])}%</b></div>`).join("");
+      }},
+      grid:{left:46,right:14,top:42,bottom:30,containLabel:false},
+      xAxis:{type:"category",boundaryGap:false,data:hours.map(h=>h.time),axisTick:{interval:0},axisLabel:{color:"#8ea0b3",interval:(idx:number)=>idx===0||idx===hours.length-1||idx%(el.clientWidth<520?4:el.clientWidth<800?3:2)===0,fontSize:10,hideOverlap:true,formatter:(v:string)=>hourLabel(v)},axisLine:{lineStyle:{color:"#31465c"}}},
+      yAxis:{type:"value",min:0,max:100,interval:25,axisLabel:{color:"#8ea0b3",fontSize:10,formatter:"{value}%"},splitLine:{lineStyle:{color:"rgba(150,170,200,.10)"}}},
+      legend:{show:true,top:0,left:46,itemWidth:14,itemHeight:3,textStyle:{color:"#91a4b7",fontSize:10},selectedMode:false},
+      series:[...series,...(shade?[{name:"__currentShade",type:"line",data:hours.map(h=>[h.time,null]),showSymbol:false,lineStyle:{opacity:0},areaStyle:{opacity:0},markArea:{silent:true,itemStyle:{color:"rgba(2,8,14,.36)"},data:[shade]},tooltip:{show:false},z:10}]:[])]
+    });
+    const ro=new ResizeObserver(()=>c.resize());ro.observe(el);
+    return()=>{ro.disconnect();c.dispose()};
+  },[hours,timezone,selectedDate,clock]);
+  return <div className="precipChart" ref={chartRef}/>;
 }
 
 function precipColor(p:number):string{
@@ -211,7 +286,8 @@ function HourlyDetails({day,hours,sunrise,sunset,timezone,unit,conv}:{day:any;ho
    {sunset&&<span>🌇 Sunset {hm(sunset)}</span>}
    {daytimeAvg!=null&&<span>🌡️ Daytime avg {Math.round(conv(daytimeAvg))}{unit}</span>}
  </div>}
- <HourlyChart hours={hours.map(h=>({time:h.time,temp:conv(h.temp),feels:conv(h.feels),rain:h.rain}))} unit={unit}/>
+ <div className="chartSection"><div className="miniChartHead"><div><label>TEMPERATURE</label><span>Hover for exact values · the dotted line marks the current hour</span></div></div><HourlyChart hours={hours.map(h=>({time:h.time,temp:conv(h.temp),feels:conv(h.feels)}))} unit={unit} timezone={timezone} selectedDate={day.date}/></div>
+ <div className="chartSection precipSection"><div className="miniChartHead"><div><label>PRECIPITATION</label><span>Probability adapts to rain, snow and storm / hail risk</span></div></div><PrecipitationChart hours={hours.map(h=>({time:h.time,rain:h.rain,code:h.code}))} timezone={timezone} selectedDate={day.date}/></div>
  <div className="hourlyTableOuter">
    <div className="hourlyLabels">
      <div className="hlabel hlabel-hour">Hour</div>
@@ -322,8 +398,7 @@ function App(){
  {noteText&&<div className="note">{noteText}</div>}
  <div className="statsBlock"><div className="statsHead"><label>YEAR SUMMARY</label><span>{rangeSummaryLabel(visibleRange,y)}</span></div><div className="stats"><Stat icon={<ThermometerSnowflake/>} title="Coldest" value={visibleMins.length?Math.min(...visibleMins).toFixed(1)+unit:"—"}/><Stat icon={<Thermometer/>} title="Average" value={visibleObs.length?(visibleObs.reduce((a,b)=>a+b.value,0)/visibleObs.length).toFixed(1)+unit:"—"}/><Stat icon={<Sun/>} title="Warmest" value={visibleMaxs.length?Math.max(...visibleMaxs).toFixed(1)+unit:"—"}/></div></div>
  </section>
- <RadarSection loc={loc}/>
- <footer>Open-Meteo weather data · historical data uses reanalysis · Radar by RainViewer</footer></main></>
+ <footer>Open-Meteo weather data · historical data uses reanalysis</footer></main></>
 }
 function Stat({icon,title,value}:{icon:any;title:string;value:string}){return <div className="stat">{icon}<span><small>{title}</small><b>{value}</b></span></div>}
 export default App;
