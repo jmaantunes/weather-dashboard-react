@@ -290,7 +290,7 @@ function HourlyChart({hours,unit,timezone,selectedDate,mode}:{hours:{time:string
     // In the Feels-like view, overlay the plain Actual temperature as a thin flat grey
     // reference line (no fill, no per-segment heat colour, not part of visualMap) so the two
     // can be compared directly — same idea as iOS Weather's Feels Like screen.
-    const actualRef=mode==="feels"?{name:"__actualRef",type:"line",data:denseIdx.map(i=>[dates[i],denseTemp[i]]),smooth:.22,showSymbol:false,silent:true,lineStyle:{width:2,color:"rgba(180,190,201,.55)"},itemStyle:{opacity:0},areaStyle:{opacity:0},tooltip:{show:false},z:0}:null;
+    const actualRef=mode==="feels"?{name:"__actualRef",type:"line",data:denseIdx.map(i=>[dates[i],denseTemp[i]]),smooth:.22,showSymbol:false,silent:true,lineStyle:{width:2,color:"rgba(180,190,201,.55)"},itemStyle:{opacity:0},areaStyle:{opacity:0},z:0}:null;
     // H/L badges — present in both Actual and Feels-like views.
     const markers={name:"__markers",type:"line",data:denseIdx.map(i=>[dates[i],values[i]]),showSymbol:false,silent:true,lineStyle:{opacity:0},itemStyle:{opacity:0},areaStyle:{opacity:0},tooltip:{show:false},z:5,markPoint:{symbol:"circle",symbolSize:6,silent:true,label:{show:true,fontFamily:"Space Grotesk",fontSize:12,fontWeight:700,formatter:(p:any)=>p.data.name},data:[{name:"L",coord:[dates[lowIndex],values[lowIndex]],itemStyle:{color:lowColor,borderColor:"#071624",borderWidth:2},label:{position:"top",offset:[0,-4],color:lowColor}},{name:"H",coord:[dates[highIndex],values[highIndex]],itemStyle:{color:highColor,borderColor:"#071624",borderWidth:2},label:{position:"top",offset:[0,-4],color:highColor}}]}};
     const seriesArr:any[]=[base];
@@ -306,7 +306,7 @@ function HourlyChart({hours,unit,timezone,selectedDate,mode}:{hours:{time:string
       const src=hours[hourIdx];
       const emoji=src?.code!=null?icon(src.code,src.isDay):"";
       const refRow=mode==="feels"?params.find(pp=>pp.seriesName==="__actualRef"):null;
-      const refLine=refRow&&refRow.value?.[1]!=null?`<div style="display:flex;gap:10px;justify-content:space-between;color:#9aa6b4;margin-top:2px"><span>Actual</span><b>${Math.round((refRow.value as any)[1])}${unit}</b></div>`:"";
+      const refLine=refRow&&refRow.value?.[1]!=null?`<div style="color:#9aa6b8;font-size:12px;margin-top:2px">Actual: ${Math.round((refRow.value as any)[1])}${unit}</div>`:"";
       return `<div style="font-weight:700;margin-bottom:6px">${preciseTimeLabel(row.axisValue)}</div><div style="font-size:13px">${emoji}${Math.round(value)}${unit}</div>${refLine}`;
     }},grid:{left:GL,right:GR,top:GT,bottom:GB,containLabel:false},xAxis:axis,yAxis:{type:"value",min:(v:{min:number})=>Math.min(0,Math.floor(v.min)),minInterval:1,axisLabel:{color:"#8ea0b3",fontSize:10,formatter:(v:number)=>`${Math.round(v)}${unit}`},splitLine:{lineStyle:{color:"rgba(150,170,200,.10)"}}},series:seriesArr});
 
