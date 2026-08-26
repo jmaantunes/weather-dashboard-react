@@ -2,6 +2,11 @@ export const label=(c:number)=>c===0?"Clear":c<=3?"Cloudy":c<=48?"Fog":c<=57?"Dr
 export const icon=(c:number)=>c===0?"☀️":c<=3?"🌤️":c<=48?"🌫️":c<=57?"🌦️":c<=67||c>=80&&c<=82?"🌧️":c<=86?"🌨️":c>=95?"⛈️":"🌡️";
 export const fmt=(s:string,opt:Intl.DateTimeFormatOptions={})=>new Intl.DateTimeFormat(undefined,{month:"short",day:"numeric",...opt}).format(new Date(`${s}T12:00:00`));
 export const localToday=(tz:string)=>{const p=new Intl.DateTimeFormat("en-CA",{timeZone:tz,year:"numeric",month:"2-digit",day:"2-digit"}).formatToParts(new Date());const g=(t:string)=>p.find(x=>x.type===t)?.value;return`${g("year")}-${g("month")}-${g("day")}`};
+// The archive API's most recent available day trails "today" by a day or two (data-processing
+// lag), so requesting up through today as end_date gets rejected with a 400. Subtracting a
+// couple of days keeps this comfortably inside the API's actual coverage without needing to
+// know the exact lag for every station/region.
+export const daysBefore=(dateStr:string,days:number)=>{const d=new Date(`${dateStr}T12:00:00Z`);d.setUTCDate(d.getUTCDate()-days);return d.toISOString().slice(0,10)};
 // Open-Meteo returns timestamps already localized to the requested `timezone` (no UTC offset
 // in the string). Reading the hour digits directly — rather than handing the string to `Date`,
 // which the browser would reinterpret in *its own* timezone — keeps the label correct no

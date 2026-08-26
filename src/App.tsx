@@ -3,7 +3,7 @@ import{CloudSun,ChevronDown,MapPin,RefreshCw,Sun,Thermometer,ThermometerSnowflak
 import*as echarts from"echarts";
 import{archive,baseline,forecast,searchLocations}from"./api";
 import type{Location,WeatherResponse}from"./types";
-import{fmt,fmtWeekdayDate,icon,label,localToday,hourLabel}from"./weather";
+import{fmt,fmtWeekdayDate,icon,label,localToday,hourLabel,daysBefore}from"./weather";
 import"./styles.css";
 
 const fallback:Location={id:2267057,name:"Lisbon",country:"Portugal",country_code:"PT",latitude:38.7223,longitude:-9.1393,timezone:"Europe/Lisbon"};
@@ -167,6 +167,10 @@ function heatColorAt(t:number,palette:string[]):string{
   const i=Math.min(palette.length-2,Math.floor(clamped));
   return mixHex(palette[i],palette[i+1],clamped-i);
 }
+/** "rgb(r,g,b)" (as produced by mixHex above) → "rgba(r,g,b,alpha)". */
+function withAlpha(rgb:string,alpha:number):string{
+  return rgb.replace("rgb(","rgba(").replace(")",`,${alpha})`);
+}
 /** Maps a value's position within [min,max] to a point on the thermal scale. */
 function heatColorForValue(value:number,min:number,max:number,palette:string[]):string{
   return heatColorAt(max>min?(value-min)/(max-min):.5,palette);
@@ -209,7 +213,7 @@ function HourlyChart({hours,unit,timezone,selectedDate,mode}:{hours:{time:string
     // data, just for anchoring), kept entirely out of heatSeriesIndex. The live-time marker
     // itself is drawn separately below as a plain `graphic` line rather than `markLine` — it
     // doesn't need a series at all, and this sidesteps the whole marker/visualMap interaction.
-    const base={name:mode==="actual"?"Actual":"Feels like",type:"line",data:hours.map(h=>[h.time,mode==="actual"?h.temp:h.feels]),smooth:.22,showSymbol:false,lineStyle:{width:3},itemStyle:{},areaStyle:mode==="actual"?{opacity:.55}:{opacity:0},z:3};
+    const base={name:mode==="actual"?"Actual":"Feels like",type:"line",data:hours.map(h=>[h.time,mode==="actual"?h.temp:h.feels]),smooth:.22,showSymbol:false,lineStyle:{width:3},itemStyle:{},areaStyle:mode==="actual"?{color:new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:withAlpha(heatColorAt(.6,palette),.55)},{offset:.7,color:withAlpha(heatColorAt(.6,palette),.16)},{offset:1,color:withAlpha(heatColorAt(.6,palette),0)}])}:{opacity:0},z:3};
     // Past hours are dotted and noticeably faded (iOS Weather treats elapsed hours as mostly
     // irrelevant); the divider between dotted/solid is exactly "now" (see the graphic line
     // below), and the curve itself switches from dotted to continuous right at that hour.
@@ -416,7 +420,7 @@ function App(){
    (async()=>{
      try{
        const today=localToday(loc.timezone);
-       const h=await archive(loc,y,y===yearNow?today:undefined,controller.signal);
+       const h=await archive(loc,y,y===yearNow?daysBefore(today,2):undefined,controller.signal);
        if(!gone)setHist(h);
      }catch(e){
        if(!gone&&!isAbortError(e))setErr(e instanceof Error?e.message:"Unable to load weather");
