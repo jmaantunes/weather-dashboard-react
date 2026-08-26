@@ -286,7 +286,7 @@ function HourlyChart({hours,unit,timezone,selectedDate,mode}:{hours:{time:string
     // rectangular tick marks) — iOS Weather treats elapsed hours as mostly irrelevant. The
     // divider is exactly "now" (see the graphic rectangle+line below), positioned to the exact
     // minute rather than snapped to the hour.
-    const past=hasCurrent?{name:"__pastCurve",type:"line",data:denseIdx.map(i=>i<=currentIndex?[dates[i],values[i]]:[dates[i],null]),connectNulls:false,smooth:.22,showSymbol:false,lineStyle:{width:3,type:[11,5],cap:"round"},itemStyle:{opacity:0},areaStyle:{opacity:0},tooltip:{show:false},z:1}:null;
+    const past=hasCurrent?{name:"__pastCurve",type:"line",data:denseIdx.map(i=>i<=currentIndex?[dates[i],values[i]]:[dates[i],null]),connectNulls:false,smooth:.22,showSymbol:false,lineStyle:{width:3,type:[11,5],cap:"round"},itemStyle:{opacity:0},areaStyle:mode==="actual"?{opacity:.55}:{opacity:0},tooltip:{show:false},z:1}:null;
     // In the Feels-like view, overlay the plain Actual temperature as a thin flat grey
     // reference line (no fill, no per-segment heat colour, not part of visualMap) so the two
     // can be compared directly — same idea as iOS Weather's Feels Like screen.
@@ -307,7 +307,7 @@ function HourlyChart({hours,unit,timezone,selectedDate,mode}:{hours:{time:string
       const emoji=src?.code!=null?icon(src.code,src.isDay):"";
       const refRow=mode==="feels"?params.find(pp=>pp.seriesName==="__actualRef"):null;
       const refLine=refRow&&refRow.value?.[1]!=null?`<div style="color:#9aa6b8;font-size:12px;margin-top:2px">Actual: ${Math.round((refRow.value as any)[1])}${unit}</div>`:"";
-      return `<div style="font-weight:700;margin-bottom:6px">${preciseTimeLabel(row.axisValue)}</div><div style="font-size:13px">${emoji}${Math.round(value)}${unit}</div>${refLine}`;
+      return `<div style="font-weight:700;margin-bottom:6px">${preciseTimeLabel(row.axisValue)}</div><div style="font-size:15px;font-weight:700">${emoji}${Math.round(value)}${unit}</div>${refLine}`;
     }},grid:{left:GL,right:GR,top:GT,bottom:GB,containLabel:false},xAxis:axis,yAxis:{type:"value",min:(v:{min:number})=>Math.min(0,Math.floor(v.min)),minInterval:1,axisLabel:{color:"#8ea0b3",fontSize:10,formatter:(v:number)=>`${Math.round(v)}${unit}`},splitLine:{lineStyle:{color:"rgba(150,170,200,.10)"}}},series:seriesArr});
 
     // Live-time marker: a dark gradient veil covering everything left of "now" — darkest at the
