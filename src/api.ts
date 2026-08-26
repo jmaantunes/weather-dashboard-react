@@ -29,9 +29,19 @@ async function get<T>(u:string,signal?:AbortSignal,retries=2):Promise<T>{
 }
 
 const q=(x:Record<string,string|number|undefined>)=>new URLSearchParams(Object.entries(x).filter(([,v])=>v!==undefined).map(([k,v])=>[k,String(v)]));
+// `models=best_match` makes explicit what Open-Meteo already does by default: for every point
+// it auto-selects the highest-resolution model available there (ECMWF IFS globally, blended
+// with regional models like AROME/ICON/HARMONIE where they cover the location) — this is
+// pinned rather than left implicit so a future default change on their end can't silently
+// swap in a coarser model.
+// `cell_selection=land` matters specifically for Portugal: nearly the whole population lives
+// on or very near the coast, and the naive "nearest grid point" can land in an ocean cell
+// (which reports sea-surface-influenced temperature/humidity, not the city's actual climate).
+// "land" tells Open-Meteo to prefer a land grid cell over a marginally-closer sea one.
+const ACCURACY={models:"best_match",cell_selection:"land"} as const;
 export async function searchLocations(name:string,signal?:AbortSignal){const d=await get<{results?:Location[]}>(`${G}?${q({name,count:10,language:"en",format:"json"})}`,signal);return d.results??[]}
-const hourly="temperature_2m,apparent_temperature,relative_humidity_2m,precipitation_probability,precipitation,weather_code,wind_speed_10m,cloud_cover,uv_index";
+const hourly="temperature_2m,apparent_temperature,relative_humidity_2m,precipitation_probability,precipitation,weather_code,wind_speed_10m,cloud_cover,uv_index,is_day";
 const daily="weather_code,temperature_2m_mean,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,wind_speed_10m_max,relative_humidity_2m_mean,uv_index_max,sunrise,sunset";
-export async function forecast(l:Location,signal?:AbortSignal){return get<WeatherResponse>(`${F}?${q({latitude:l.latitude,longitude:l.longitude,timezone:l.timezone,forecast_days:16,daily,hourly})}`,signal)}
-export async function archive(l:Location,y:number,end?:string,signal?:AbortSignal){return get<WeatherResponse>(`${A}?${q({latitude:l.latitude,longitude:l.longitude,timezone:l.timezone,start_date:`${y}-01-01`,end_date:end??`${y}-12-31`,daily:"temperature_2m_mean,temperature_2m_max,temperature_2m_min",hourly})}`,signal)}
-export async function baseline(l:Location,signal?:AbortSignal){return get<WeatherResponse>(`${A}?${q({latitude:l.latitude,longitude:l.longitude,timezone:l.timezone,start_date:"1991-01-01",end_date:"2020-12-31",daily:"temperature_2m_mean,temperature_2m_max,temperature_2m_min"})}`,signal)}
+export async function forecast(l:Location,signal?:AbortSignal){return get<WeatherResponse>(`${F}?${q({latitude:l.latitude,longitude:l.longitude,timezone:l.timezone,forecast_days:16,daily,hourly,...ACCURACY})}`,signal)}
+export async function archive(l:Location,y:number,end?:string,signal?:AbortSignal){return get<WeatherResponse>(`${A}?${q({latitude:l.latitude,longitude:l.longitude,timezone:l.timezone,start_date:`${y}-01-01`,end_date:end??`${y}-12-31`,daily:"temperature_2m_mean,temperature_2m_max,temperature_2m_min",hourly,cell_selection:ACCURACY.cell_selection})}`,signal)}
+export async function baseline(l:Location,signal?:AbortSignal){return get<WeatherResponse>(`${A}?${q({latitude:l.latitude,longitude:l.longitude,timezone:l.timezone,start_date:"1991-01-01",end_date:"2020-12-31",daily:"temperature_2m_mean,temperature_2m_max,temperature_2m_min",cell_selection:ACCURACY.cell_selection})}`,signal)}

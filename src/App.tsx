@@ -3,7 +3,7 @@ import{CloudSun,ChevronDown,MapPin,RefreshCw,Sun,Thermometer,ThermometerSnowflak
 import*as echarts from"echarts";
 import{archive,baseline,forecast,searchLocations}from"./api";
 import type{Location,WeatherResponse}from"./types";
-import{fmt,fmtWeekdayDate,icon,label,localToday,hourLabel,daysBefore}from"./weather";
+import{fmt,fmtWeekdayDate,icon,label,localToday,hourLabel,preciseTimeLabel,daysBefore}from"./weather";
 import"./styles.css";
 
 const fallback:Location={id:2267057,name:"Lisbon",country:"Portugal",country_code:"PT",latitude:38.7223,longitude:-9.1393,timezone:"Europe/Lisbon"};
@@ -148,10 +148,31 @@ function DayCard({d,isToday,selected,onClick,conv}:{d:any;isToday:boolean;select
  return <button className={`day ${selected?"selected":""}`} onClick={onClick}><small>{isToday?"Today":new Date(d.date+"T12:00:00").toLocaleDateString(undefined,{weekday:"short"})}</small><b>{icon(d.code)}</b><strong><small className="hl">H</small>{Math.round(conv(d.max))}°</strong><span><small className="hl">L</small>{Math.round(conv(d.min))}°</span><p>{label(d.code)}</p><small className="dayMeta"><span>💧 {Math.round(d.rain)}%</span> · <span>{Math.round(d.wind)} km/h</span></small></button>
 }
 
-// Thermal colour scale used for hourly temperature curves: cold → cool → warm → hot. Shared by
-// the chart's visualMap (which colours the line/area continuously) and the H/L badges (which
-// need the exact colour at one specific value, computed the same way `mixHex` does).
-const HEAT_COLORS=["#3aa8ff","#34d399","#fbbf24","#fb7185"];
+// Thermal colour scale used for hourly temperature curves. Anchored to *absolute* real-world
+// temperatures (in °C) rather than each day's own min/max — a 15°C peak shouldn't render as
+// hot-orange just because it happens to be that day's warmest moment, and a cold day in
+// Antarctica shouldn't have its "warmest" (still-freezing) hour rendered in a hot colour just
+// because it's relatively less cold than the rest of that day.
+//
+// Below 0°C the scale continues toward pale icy white (deep freeze reads as "snow", not as a
+// darker version of the same blue used just above freezing) rather than reusing the warm end
+// of the scale, which is what produced the "red at the coldest point" bug. A single day can
+// cross from negative to positive, so this is one continuous function across the whole range,
+// not two separate palettes switched on sign.
+//
+// Stops are deliberately clamped at both ends: anything at or below -25°C renders identically
+// to -25°C, and anything at or above 40°C renders identically to 40°C, so a data glitch or an
+// unrealistic input (200°C, etc.) can never index outside the palette or produce a broken colour.
+const TEMP_COLOR_STOPS_C:[number,string][]=[
+  [-25,"#eef4fa"], // deep freeze — icy white
+  [-10,"#a9cfe6"], // very cold — pale blue
+  [  0,"#4a90c9"], // freezing point — blue
+  [ 10,"#4f8f88"], // cool — dim blue-green (not vivid green)
+  [ 18,"#d9c15a"], // mild — soft gold
+  [ 25,"#e8863f"], // warm — orange
+  [ 32,"#e0603f"], // hot — red-orange
+  [ 40,"#cf4335"], // very hot (capped) — red leaning orange, not pure saturated red
+];
 function hexToRgb(hex:string):[number,number,number]{
   const h=hex.replace("#","");
   return [parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)];
@@ -160,18 +181,40 @@ function mixHex(a:string,b:string,t:number):string{
   const pa=hexToRgb(a),pb=hexToRgb(b);
   return `rgb(${Math.round(pa[0]+(pb[0]-pa[0])*t)},${Math.round(pa[1]+(pb[1]-pa[1])*t)},${Math.round(pa[2]+(pb[2]-pa[2])*t)})`;
 }
-function heatColorAt(t:number):string{
-  const clamped=Math.max(0,Math.min(1,t))*(HEAT_COLORS.length-1);
-  const i=Math.min(HEAT_COLORS.length-2,Math.floor(clamped));
-  return mixHex(HEAT_COLORS[i],HEAT_COLORS[i+1],clamped-i);
+/** Colour for an absolute Celsius value, clamped at both ends — never throws, never indexes out of range. */
+function heatColorForCelsius(celsius:number):string{
+  const stops=TEMP_COLOR_STOPS_C;
+  if(!Number.isFinite(celsius))return stops[Math.floor(stops.length/2)][1];
+  if(celsius<=stops[0][0])return stops[0][1];
+  if(celsius>=stops[stops.length-1][0])return stops[stops.length-1][1];
+  for(let i=0;i<stops.length-1;i++){
+    const[t0,c0]=stops[i],[t1,c1]=stops[i+1];
+    if(celsius>=t0&&celsius<=t1)return mixHex(c0,c1,(celsius-t0)/((t1-t0)||1));
+  }
+  return stops[stops.length-1][1];
 }
-/** Maps a value's position within [min,max] to a point on the thermal scale. */
-function heatColorForValue(value:number,min:number,max:number):string{
-  return heatColorAt(max>min?(value-min)/(max-min):.5);
+/** Reverse the display-unit conversion so thresholds always evaluate in real Celsius terms,
+ * regardless of whether the UI is currently showing °C or °F. */
+function toCelsiusFrom(unit:string,v:number):number{return unit==="°F"?(v-32)*5/9:v}
+function fromCelsiusTo(unit:string,c:number):number{return unit==="°F"?c*9/5+32:c}
+/** Pre-samples the absolute scale at N evenly-spaced points across a fixed display-unit range,
+ * so it can be fed to echarts' visualMap (which linearly interpolates between evenly-spaced
+ * colour stops) while the actual colour *values* still follow our non-uniform, absolute-Celsius
+ * curve — e.g. the whole 10–18°C "mild" band stays visually muted rather than being stretched
+ * across whatever fraction of the day's own range it happens to occupy. */
+function buildHeatPalette(unit:string,steps=48):{colors:string[];min:number;max:number}{
+  const min=fromCelsiusTo(unit,TEMP_COLOR_STOPS_C[0][0]);
+  const max=fromCelsiusTo(unit,TEMP_COLOR_STOPS_C[TEMP_COLOR_STOPS_C.length-1][0]);
+  const colors:string[]=[];
+  for(let i=0;i<=steps;i++){
+    const displayValue=min+(max-min)*(i/steps);
+    colors.push(heatColorForCelsius(toCelsiusFrom(unit,displayValue)));
+  }
+  return {colors,min,max};
 }
 
 /** Hour-by-hour temperature chart. */
-function HourlyChart({hours,unit,timezone,selectedDate,mode}:{hours:{time:string;temp:number;feels:number}[];unit:string;timezone:string;selectedDate:string;mode:"actual"|"feels"}){
+function HourlyChart({hours,unit,timezone,selectedDate,mode}:{hours:{time:string;temp:number;feels:number;code?:number;isDay?:boolean}[];unit:string;timezone:string;selectedDate:string;mode:"actual"|"feels"}){
   const chartRef=useRef<HTMLDivElement|null>(null);
   const[clock,setClock]=useState(0);
   useEffect(()=>{setClock(Date.now());const id=window.setInterval(()=>setClock(Date.now()),60_000);return()=>window.clearInterval(id)},[selectedDate,timezone]);
@@ -183,21 +226,47 @@ function HourlyChart({hours,unit,timezone,selectedDate,mode}:{hours:{time:string
     const part=(t:string)=>parts.find(x=>x.type===t)?.value||"";
     const today=localToday(timezone), nowDate=`${part("year")}-${part("month")}-${part("day")}`, nowHour=part("hour");
     const isToday=selectedDate===today&&nowDate===today;
-    const currentTime=isToday?`${today}T${nowHour}:00`:null;
-    const currentIndex=currentTime?hours.findIndex(h=>h.time===currentTime):-1;
+
+    // The chart is supersampled to one point every 5 minutes (289 points across the day),
+    // linearly interpolated between the real hourly samples. This is what makes hovering feel
+    // continuous rather than snapping between 25 discrete hourly ticks — echarts' axis-trigger
+    // tooltip always resolves to *some* real data point, so the fix is having enough of them,
+    // not writing a custom hit-test. It's also what lets the past/future curve split (below)
+    // land within ~2.5 minutes of the real current time instead of snapping to the nearest
+    // whole hour.
+    const STEP_MIN=5,TOTAL_MIN=24*60,STEPS_PER_HOUR=60/STEP_MIN;
+    const denseTimes:string[]=[],denseTemp:number[]=[],denseFeels:number[]=[],denseHourIdx:number[]=[];
+    for(let m=0;m<=TOTAL_MIN;m+=STEP_MIN){
+      const hourIdx=Math.min(Math.floor(m/60),hours.length-1);
+      const frac=(m%60)/60;
+      const h0=hours[hourIdx],h1=hours[Math.min(hourIdx+1,hours.length-1)];
+      denseTemp.push(h0.temp+(h1.temp-h0.temp)*frac);
+      denseFeels.push(h0.feels+(h1.feels-h0.feels)*frac);
+      denseHourIdx.push(Math.min(Math.round(m/60),hours.length-1));
+      const hh=String(Math.floor(m/60)%24).padStart(2,"0"),mm=String(m%60).padStart(2,"0");
+      denseTimes.push(`${hours[hourIdx].time.slice(0,10)}T${hh}:${mm}`);
+    }
+    const dates=denseTimes, values=mode==="actual"?denseTemp:denseFeels;
+
+    // Exact fractional position (in dense-grid units) for the live-time marker — purely a pixel
+    // calculation (see paintNow below), so it's precise to the minute regardless of the grid's
+    // own 5-minute resolution.
+    const nowMinutes=isToday?Number(nowHour)*60+Number(part("minute")):null;
+    const fracIndex=nowMinutes!=null?nowMinutes/STEP_MIN:null;
+    const currentIndex=fracIndex!=null?Math.round(fracIndex):-1;
     const hasCurrent=currentIndex>=0;
-    // Exact fractional position (hour + minute/60) for the live-time marker line — the data
-    // itself still samples once per hour, but the marker isn't limited to snapping there.
-    const fracIndex=isToday?Number(nowHour)+Number(part("minute"))/60:null;
-    const dates=hours.map(h=>h.time), values=hours.map(h=>mode==="actual"?h.temp:h.feels);
+
     const lowIndex=values.indexOf(Math.min(...values)), highIndex=values.indexOf(Math.max(...values));
     const width=el.clientWidth, labelStep=width>=700?1:width>=500?2:4;
-    const axis={type:"category",boundaryGap:false,data:dates,axisTick:{interval:0,length:4,lineStyle:{color:"#52687e"}},axisLabel:{color:"#8ea0b3",interval:(idx:number)=>idx%labelStep===0||idx===dates.length-1,fontSize:10,hideOverlap:true,formatter:(v:string)=>hourLabel(v)},axisLine:{lineStyle:{color:"#31465c"}}};
-    // Thermal colour scale: coldest point of the *currently visible* range maps to the first
-    // stop, hottest to the last — relative per day/mode, not an absolute temperature scale.
-    const domainMin=Math.min(...values), domainMax=Math.max(...values);
-    const lowColor=heatColorForValue(values[lowIndex],domainMin,domainMax);
-    const highColor=heatColorForValue(values[highIndex],domainMin,domainMax);
+    // Ticks/labels only ever land on whole hours (every STEPS_PER_HOUR-th dense point) — the
+    // 5-minute points in between are for hover/curve precision only, never shown on the axis.
+    const axis={type:"category",boundaryGap:false,data:dates,axisTick:{interval:(idx:number)=>idx%STEPS_PER_HOUR===0,length:4,lineStyle:{color:"#52687e"}},axisLabel:{color:"#8ea0b3",interval:(idx:number)=>idx%STEPS_PER_HOUR!==0?false:(idx/STEPS_PER_HOUR)%labelStep===0||idx===dates.length-1,fontSize:10,hideOverlap:true,formatter:(v:string)=>hourLabel(v)},axisLine:{lineStyle:{color:"#31465c"}}};
+    // Thermal colour scale: anchored to absolute real-world temperature (see heatColorForCelsius),
+    // not the currently visible range — so a mild day and a scorching day are never rendered
+    // with the same intensity of "hot" colour just because each is relatively its own peak.
+    const lowColor=heatColorForCelsius(toCelsiusFrom(unit,values[lowIndex]));
+    const highColor=heatColorForCelsius(toCelsiusFrom(unit,values[highIndex]));
+    const heatPalette=buildHeatPalette(unit);
     // IMPORTANT: markPoint must NOT live on a series that visualMap targets (below). visualMap
     // recolors every element attached to its target series, including markers, and those don't
     // carry the plain [x,y] values it expects — that combination is what crashed the renderer
@@ -207,35 +276,59 @@ function HourlyChart({hours,unit,timezone,selectedDate,mode}:{hours:{time:string
     // doesn't need a series at all, and this sidesteps the whole marker/visualMap interaction.
     // areaStyle deliberately has no explicit `color` — it inherits the same per-segment colour
     // visualMap is already painting the line with, so the fill and the stroke always match.
-    const base={name:mode==="actual"?"Actual":"Feels like",type:"line",data:hours.map(h=>[h.time,mode==="actual"?h.temp:h.feels]),smooth:.22,showSymbol:false,lineStyle:{width:3},itemStyle:{},areaStyle:mode==="actual"?{opacity:.55}:{opacity:0},z:1};
-    // Past hours are dotted (iOS Weather treats elapsed hours as mostly irrelevant); the
-    // divider between dotted/solid is exactly "now" (see the graphic rectangle+line below),
-    // and the curve itself switches from dotted to continuous right at that hour.
-    const past=hasCurrent?{name:"__pastCurve",type:"line",data:hours.map((h,i)=>i<=currentIndex?[h.time,values[i]]:[h.time,null]),connectNulls:false,smooth:.22,showSymbol:false,lineStyle:{width:3,type:"dotted",opacity:.55},itemStyle:{opacity:0},areaStyle:{opacity:0},tooltip:{show:false},z:2}:null;
+    // `base` and `past` split the day at "now" and never overlap (`base` only carries the
+    // future/current half, `past` only the elapsed half, joined by sharing the boundary point)
+    // — this is what makes it read as one continuous curve that's dashed then solid, rather
+    // than a separate dashed line drawn on top of a solid one underneath.
+    const denseIdx=denseTimes.map((_,i)=>i);
+    const base={name:mode==="actual"?"Actual":"Feels like",type:"line",data:denseIdx.map(i=>hasCurrent&&i<currentIndex?[dates[i],null]:[dates[i],values[i]]),connectNulls:false,smooth:.22,showSymbol:false,lineStyle:{width:3},itemStyle:{},areaStyle:mode==="actual"?{opacity:.55}:{opacity:0},z:1};
+    // Past hours use a longer, round-capped dash (reads as a row of little pills rather than
+    // rectangular tick marks) — iOS Weather treats elapsed hours as mostly irrelevant. The
+    // divider is exactly "now" (see the graphic rectangle+line below), positioned to the exact
+    // minute rather than snapped to the hour.
+    const past=hasCurrent?{name:"__pastCurve",type:"line",data:denseIdx.map(i=>i<=currentIndex?[dates[i],values[i]]:[dates[i],null]),connectNulls:false,smooth:.22,showSymbol:false,lineStyle:{width:3,type:[11,5],cap:"round"},itemStyle:{opacity:0},areaStyle:{opacity:0},tooltip:{show:false},z:1}:null;
+    // In the Feels-like view, overlay the plain Actual temperature as a thin flat grey
+    // reference line (no fill, no per-segment heat colour, not part of visualMap) so the two
+    // can be compared directly — same idea as iOS Weather's Feels Like screen.
+    const actualRef=mode==="feels"?{name:"__actualRef",type:"line",data:denseIdx.map(i=>[dates[i],denseTemp[i]]),smooth:.22,showSymbol:false,silent:true,lineStyle:{width:2,color:"rgba(180,190,201,.55)"},itemStyle:{opacity:0},areaStyle:{opacity:0},tooltip:{show:false},z:0}:null;
     // H/L badges — present in both Actual and Feels-like views.
-    const markers={name:"__markers",type:"line",data:hours.map(h=>[h.time,mode==="actual"?h.temp:h.feels]),showSymbol:false,silent:true,lineStyle:{opacity:0},itemStyle:{opacity:0},areaStyle:{opacity:0},tooltip:{show:false},z:5,markPoint:{symbol:"circle",symbolSize:6,silent:true,label:{show:true,fontFamily:"Space Grotesk",fontSize:12,fontWeight:700,formatter:(p:any)=>p.data.name},data:[{name:"L",coord:[hours[lowIndex]?.time,values[lowIndex]],itemStyle:{color:lowColor,borderColor:"#071624",borderWidth:2},label:{position:"top",offset:[0,-4],color:lowColor}},{name:"H",coord:[hours[highIndex]?.time,values[highIndex]],itemStyle:{color:highColor,borderColor:"#071624",borderWidth:2},label:{position:"top",offset:[0,-4],color:highColor}}]}};
+    const markers={name:"__markers",type:"line",data:denseIdx.map(i=>[dates[i],values[i]]),showSymbol:false,silent:true,lineStyle:{opacity:0},itemStyle:{opacity:0},areaStyle:{opacity:0},tooltip:{show:false},z:5,markPoint:{symbol:"circle",symbolSize:6,silent:true,label:{show:true,fontFamily:"Space Grotesk",fontSize:12,fontWeight:700,formatter:(p:any)=>p.data.name},data:[{name:"L",coord:[dates[lowIndex],values[lowIndex]],itemStyle:{color:lowColor,borderColor:"#071624",borderWidth:2},label:{position:"top",offset:[0,-4],color:lowColor}},{name:"H",coord:[dates[highIndex],values[highIndex]],itemStyle:{color:highColor,borderColor:"#071624",borderWidth:2},label:{position:"top",offset:[0,-4],color:highColor}}]}};
     const seriesArr:any[]=[base];
     const heatSeriesIndex=[0];
     if(past){seriesArr.push(past);heatSeriesIndex.push(seriesArr.length-1);}
+    if(actualRef)seriesArr.push(actualRef);
     seriesArr.push(markers);
-    c.setOption({animationDuration:300,visualMap:{show:false,type:"continuous",dimension:1,seriesIndex:heatSeriesIndex,min:domainMin,max:domainMax,inRange:{color:HEAT_COLORS}},tooltip:{show:true,trigger:"axis",axisPointer:{type:"line",lineStyle:{color:"rgba(224,235,246,.28)",width:1}},backgroundColor:"rgba(7,18,30,.96)",borderColor:"rgba(194,216,239,.16)",textStyle:{color:"#eaf2f8",fontFamily:"DM Sans",fontSize:11},formatter:(params:any[])=>{const row=params.find(p=>p.seriesName!=="__pastCurve"&&p.seriesName!=="__markers"&&p.value?.[1]!=null);if(!row)return"";const p=hours.find(h=>h.time===row.axisValue);if(!p)return"";const value=mode==="actual"?p.temp:p.feels;return `<div style="font-weight:700;margin-bottom:6px">${hourLabel(row.axisValue)}</div><div style="display:flex;gap:10px;justify-content:space-between"><span>${mode==="actual"?"Actual":"Feels like"}</span><b>${Math.round(value)}${unit}</b></div>`;}},grid:{left:GL,right:GR,top:GT,bottom:GB,containLabel:false},xAxis:axis,yAxis:{type:"value",min:(v:{min:number})=>Math.min(0,Math.floor(v.min)),minInterval:1,axisLabel:{color:"#8ea0b3",fontSize:10,formatter:(v:number)=>`${Math.round(v)}${unit}`},splitLine:{lineStyle:{color:"rgba(150,170,200,.10)"}}},series:seriesArr});
+    c.setOption({animationDuration:300,visualMap:{show:false,type:"continuous",dimension:1,seriesIndex:heatSeriesIndex,min:heatPalette.min,max:heatPalette.max,inRange:{color:heatPalette.colors}},tooltip:{show:true,trigger:"axis",axisPointer:{type:"line",lineStyle:{color:"rgba(224,235,246,.28)",width:1}},backgroundColor:"rgba(7,18,30,.96)",borderColor:"rgba(194,216,239,.16)",textStyle:{color:"#eaf2f8",fontFamily:"DM Sans",fontSize:11},formatter:(params:any[])=>{
+      const row=params.find(p=>p.seriesName!=="__markers"&&p.seriesName!=="__actualRef"&&p.value?.[1]!=null);
+      if(!row)return"";
+      const value=(row.value as any)[1] as number;
+      const hourIdx=denseHourIdx[row.dataIndex]??0;
+      const src=hours[hourIdx];
+      const emoji=src?.code!=null?icon(src.code,src.isDay):"";
+      const refRow=mode==="feels"?params.find(pp=>pp.seriesName==="__actualRef"):null;
+      const refLine=refRow&&refRow.value?.[1]!=null?`<div style="display:flex;gap:10px;justify-content:space-between;color:#9aa6b4;margin-top:2px"><span>Actual</span><b>${Math.round((refRow.value as any)[1])}${unit}</b></div>`:"";
+      return `<div style="font-weight:700;margin-bottom:6px">${preciseTimeLabel(row.axisValue)}</div><div style="font-size:13px">${emoji}${Math.round(value)}${unit}</div>${refLine}`;
+    }},grid:{left:GL,right:GR,top:GT,bottom:GB,containLabel:false},xAxis:axis,yAxis:{type:"value",min:(v:{min:number})=>Math.min(0,Math.floor(v.min)),minInterval:1,axisLabel:{color:"#8ea0b3",fontSize:10,formatter:(v:number)=>`${Math.round(v)}${unit}`},splitLine:{lineStyle:{color:"rgba(150,170,200,.10)"}}},series:seriesArr});
 
-    // Live-time marker: a flat dark rectangle covering everything left of "now" (not a fade —
-    // iOS Weather just dims the whole past region uniformly, since elapsed hours are close to
-    // irrelevant) plus a thin dashed divider line, both hand-positioned from the exact
-    // hour+minute fraction (boundaryGap:false category axis ⇒ evenly-spaced points, so this is
-    // simple linear interpolation) rather than snapping to the nearest hourly tick. Both
-    // elements are always present in the option (never added/removed via $action), just
-    // toggled `invisible` — that avoids a separate class of echarts crash where removing a
-    // graphic element that was never created throws internally. z sits above the markers so
-    // the dimming reads as "on top of" the whole chart, matching the reference screenshot,
-    // while staying non-interactive (`silent`) so it never blocks hover/tooltip.
+    // Live-time marker: a dark gradient veil covering everything left of "now" — darkest at the
+    // start of the day (longest elapsed, least relevant) fading toward "now" (still recent) —
+    // plus a thin dashed divider line, both hand-positioned from the exact hour+minute fraction
+    // (boundaryGap:false category axis ⇒ evenly-spaced points, so this is simple linear
+    // interpolation) rather than snapped to a data point. The gradient uses explicit pixel
+    // coordinates (globalCoord) spanning the *actual* dimmed region (GL → x) — not the whole
+    // canvas and not just a sliver at "now" — so it always fades across the full elapsed portion
+    // of the graph, however much or little of the day has passed. Both graphic elements are
+    // always present in the option (never added/removed via $action), just toggled `invisible`
+    // — that avoids a separate class of echarts crash where removing a graphic element that was
+    // never created throws internally. z sits above the markers so the dimming reads as "on top
+    // of" the whole chart, while staying non-interactive (`silent`) so it never blocks hover.
     const paintNow=()=>{
       const w=el.clientWidth-GL-GR, h=el.clientHeight;
       const x=fracIndex==null?GL:GL+(fracIndex/(dates.length-1))*w;
       const y1=GT,y2=Math.max(GT,h-GB);
+      const veil=x>GL?new echarts.graphic.LinearGradient(GL,0,x,0,[{offset:0,color:"rgba(1,7,13,.62)"},{offset:1,color:"rgba(1,7,13,.22)"}],true):"rgba(1,7,13,0)";
       c.setOption({graphic:[
-        {id:"pastRect",type:"rect",invisible:fracIndex==null,silent:true,z:40,shape:{x:GL,y:y1,width:Math.max(0,x-GL),height:y2-y1},style:{fill:"rgba(1,7,13,.5)"}},
+        {id:"pastRect",type:"rect",invisible:fracIndex==null,silent:true,z:40,shape:{x:GL,y:y1,width:Math.max(0,x-GL),height:y2-y1},style:{fill:veil}},
         {id:"nowLine",type:"line",invisible:fracIndex==null,silent:true,z:50,shape:{x1:x,y1,x2:x,y2},style:{stroke:"rgba(232,239,246,.85)",lineWidth:1.2,lineDash:[3,3]}}
       ]});
     };
@@ -336,7 +429,7 @@ function daytimeAverage(hours:{time:string;temp:number}[],sunrise?:string,sunset
 function HourlyModeToggle({mode,setMode}:{mode:"actual"|"feels";setMode:(v:"actual"|"feels")=>void}){
  return <div className="hourlyModeToggle"><small>VIEW</small><div className="switch"><button type="button" className={mode==="actual"?"active":""} onClick={()=>setMode("actual")}>Actual</button><button type="button" className={mode==="feels"?"active":""} onClick={()=>setMode("feels")}>Feels like</button></div></div>
 }
-function HourlyDetails({day,hours,sunrise,sunset,timezone,cityName,unit,conv}:{day:any;hours:{time:string;temp:number;feels:number;rain:number;wind:number;code:number}[];sunrise?:string;sunset?:string;timezone:string;cityName:string;unit:string;conv:(n:number)=>number}){
+function HourlyDetails({day,hours,sunrise,sunset,timezone,cityName,unit,conv}:{day:any;hours:{time:string;temp:number;feels:number;rain:number;wind:number;code:number;isDay?:boolean}[];sunrise?:string;sunset?:string;timezone:string;cityName:string;unit:string;conv:(n:number)=>number}){
  const dayHours=hours.slice(0,24);
  const temps=dayHours.map(h=>h.temp);
  const minIdx=temps.length?temps.indexOf(Math.min(...temps)):-1;
@@ -352,7 +445,7 @@ function HourlyDetails({day,hours,sunrise,sunset,timezone,cityName,unit,conv}:{d
    {sunset&&<span>🌇 Sunset {hm(sunset)}</span>}
    {daytimeAvg!=null&&<span>🌡️ Daytime avg {Math.round(conv(daytimeAvg))}{unit}</span>}
  </div>}
- <div className="chartSection"><div className="miniChartHead"><div><label>TEMPERATURE</label><span>{hourlyMode==="actual"?"Actual temperature with high / low markers":"Apparent temperature"}</span></div><HourlyModeToggle mode={hourlyMode} setMode={setHourlyMode}/></div><HourlyChart hours={hours.map(h=>({time:h.time,temp:conv(h.temp),feels:conv(h.feels)}))} unit={unit} timezone={timezone} selectedDate={day.date} mode={hourlyMode}/></div>
+ <div className="chartSection"><div className="miniChartHead"><div><label>TEMPERATURE</label><span>{hourlyMode==="actual"?"Actual temperature with high / low markers":"Apparent temperature"}</span></div><HourlyModeToggle mode={hourlyMode} setMode={setHourlyMode}/></div><HourlyChart hours={hours.map(h=>({time:h.time,temp:conv(h.temp),feels:conv(h.feels),code:h.code,isDay:h.isDay}))} unit={unit} timezone={timezone} selectedDate={day.date} mode={hourlyMode}/></div>
  <div className="chartSection precipSection"><div className="miniChartHead"><div><label>PRECIPITATION</label><span>Probability adapts to rain, snow and storm / hail risk</span></div></div><PrecipitationChart hours={hours.map(h=>({time:h.time,rain:h.rain,code:h.code}))} timezone={timezone} selectedDate={day.date}/></div>
  <div className="hourlyTableOuter">
    <div className="hourlyLabels">
@@ -365,7 +458,7 @@ function HourlyDetails({day,hours,sunrise,sunset,timezone,cityName,unit,conv}:{d
    </div>
    <div className="hourlyTableWrap"><div className="hourlyTable">{hours.map((h,idx)=><div className={`hcol${h.time===currentHourKey?" is-current": ""}`} key={h.time}>
      <div className="hcol-hour">{idx===24?"24H":`${Number(h.time.slice(11,13))}H`}</div>
-     <div className="hcol-icon">{icon(h.code)}</div>
+     <div className="hcol-icon">{icon(h.code,h.isDay)}</div>
      <div className="hcol-precip" style={{color:precipColor(h.rain)}}>{Math.round(h.rain)}%</div>
      <div className={`hcol-temp${idx===minIdx?" is-min":""}${idx===maxIdx?" is-max":""}`}>{Math.round(conv(h.temp))}°</div>
      <div className="hcol-feels" style={{background:feelsBg(h.feels)}}>{Math.round(conv(h.feels))}°</div>
@@ -456,7 +549,7 @@ function App(){
    if(!data||!selected)return[];
    const start=data.hourly.time.findIndex(x=>x.startsWith(selected.date));
    if(start<0)return[];
-   return Array.from({length:25},(_,j)=>{const i=start+j;return{time:data.hourly.time[i],temp:data.hourly.temperature_2m?.[i]??0,feels:data.hourly.apparent_temperature?.[i]??0,rain:data.hourly.precipitation_probability?.[i]??0,wind:data.hourly.wind_speed_10m?.[i]??0,code:data.hourly.weather_code?.[i]??0}}).filter(h=>h.time);
+   return Array.from({length:25},(_,j)=>{const i=start+j;return{time:data.hourly.time[i],temp:data.hourly.temperature_2m?.[i]??0,feels:data.hourly.apparent_temperature?.[i]??0,rain:data.hourly.precipitation_probability?.[i]??0,wind:data.hourly.wind_speed_10m?.[i]??0,code:data.hourly.weather_code?.[i]??0,isDay:data.hourly.is_day?.[i]==null?undefined:data.hourly.is_day[i]===1}}).filter(h=>h.time);
  },[data,selected]);
  const daySummaryText=selected&&selectedHours.length?daySummary(selectedHours.slice(0,24),selected.code,conv,unit):"";
  const selectedSunrise=data?.daily.sunrise?.[selectedDay];
