@@ -97,7 +97,7 @@ function TemperatureChart({observed,typical,forecastPoints,unit,showForecast,sho
         if(text)rows+=`<div style="display:flex;gap:14px;justify-content:space-between;margin-top:4px"><span>${name}</span><b>${text}</b></div>`;
       });
       return `<div style="font-weight:700;margin-bottom:4px">${dateLabel}</div>${rows}`;
-    }},grid:{left:8,right:18,top:24,bottom:74,containLabel:true},xAxis:{type:"category",boundaryGap:false,data:dates,axisLabel:{color:"#71859d",interval:(index:number,_value:string)=>Number(dates[index]?.slice(8,10))===1,formatter:(v:string)=>monthLabel(v)},axisLine:{lineStyle:{color:"#26394d"}}},yAxis:{type:"value",min:0,axisLabel:{color:"#71859d",formatter:`{value}${unit}`},splitLine:{lineStyle:{color:"rgba(150,170,200,.09)"}}},dataZoom:[{type:"slider",start:0,end:100,height:22,bottom:8,showDetail:false,borderColor:"#26394d",backgroundColor:"#091725",fillerColor:"rgba(85,183,255,.16)",handleStyle:{color:"#55b7ff",borderColor:"#55b7ff"},moveHandleStyle:{color:"#344b63"}},{type:"inside",start:0,end:100}],series});
+    }},grid:{left:8,right:18,top:24,bottom:74,containLabel:true},xAxis:{type:"category",boundaryGap:false,data:dates,axisLabel:{color:"#71859d",interval:(index:number,_value:string)=>Number(dates[index]?.slice(8,10))===1,formatter:(v:string)=>monthLabel(v)},axisLine:{lineStyle:{color:"#26394d"}}},yAxis:{type:"value",min:(v:{min:number})=>Math.min(0,Math.floor(v.min)),axisLabel:{color:"#71859d",formatter:`{value}${unit}`},splitLine:{lineStyle:{color:"rgba(150,170,200,.09)"}}},dataZoom:[{type:"slider",start:0,end:100,height:22,bottom:8,showDetail:false,borderColor:"#26394d",backgroundColor:"#091725",fillerColor:"rgba(85,183,255,.16)",handleStyle:{color:"#55b7ff",borderColor:"#55b7ff"},moveHandleStyle:{color:"#344b63"}},{type:"inside",start:0,end:100}],series});
 
     // When the visible range sits entirely inside one calendar month, show that month's name
     // centered along the axis — the boundary dividers alone aren't visible unless a month edge
@@ -148,12 +148,10 @@ function DayCard({d,isToday,selected,onClick,conv}:{d:any;isToday:boolean;select
  return <button className={`day ${selected?"selected":""}`} onClick={onClick}><small>{isToday?"Today":new Date(d.date+"T12:00:00").toLocaleDateString(undefined,{weekday:"short"})}</small><b>{icon(d.code)}</b><strong><small className="hl">H</small>{Math.round(conv(d.max))}°</strong><span><small className="hl">L</small>{Math.round(conv(d.min))}°</span><p>{label(d.code)}</p><small className="dayMeta"><span>💧 {Math.round(d.rain)}%</span> · <span>{Math.round(d.wind)} km/h</span></small></button>
 }
 
-// Thermal colour scales used for the hourly curves: cold → cool → warm → hot. Shared by the
-// chart's visualMap (which colours the line/area continuously) and the H/L badges (which need
-// the exact colour at one specific value, computed the same way `mixHex` does). "Actual" and
-// "Feels like" use different palettes so the two views read as visually distinct.
-const HEAT_COLORS_ACTUAL=["#3aa0ff","#ffb454","#fb5a4a"];
-const HEAT_COLORS_FEELS=["#4fd1c5","#e3e08a","#ffb454"];
+// Thermal colour scale used for hourly temperature curves: cold → cool → warm → hot. Shared by
+// the chart's visualMap (which colours the line/area continuously) and the H/L badges (which
+// need the exact colour at one specific value, computed the same way `mixHex` does).
+const HEAT_COLORS=["#3aa8ff","#34d399","#fbbf24","#fb7185"];
 function hexToRgb(hex:string):[number,number,number]{
   const h=hex.replace("#","");
   return [parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)];
@@ -162,18 +160,14 @@ function mixHex(a:string,b:string,t:number):string{
   const pa=hexToRgb(a),pb=hexToRgb(b);
   return `rgb(${Math.round(pa[0]+(pb[0]-pa[0])*t)},${Math.round(pa[1]+(pb[1]-pa[1])*t)},${Math.round(pa[2]+(pb[2]-pa[2])*t)})`;
 }
-function heatColorAt(t:number,palette:string[]):string{
-  const clamped=Math.max(0,Math.min(1,t))*(palette.length-1);
-  const i=Math.min(palette.length-2,Math.floor(clamped));
-  return mixHex(palette[i],palette[i+1],clamped-i);
-}
-/** "rgb(r,g,b)" (as produced by mixHex above) → "rgba(r,g,b,alpha)". */
-function withAlpha(rgb:string,alpha:number):string{
-  return rgb.replace("rgb(","rgba(").replace(")",`,${alpha})`);
+function heatColorAt(t:number):string{
+  const clamped=Math.max(0,Math.min(1,t))*(HEAT_COLORS.length-1);
+  const i=Math.min(HEAT_COLORS.length-2,Math.floor(clamped));
+  return mixHex(HEAT_COLORS[i],HEAT_COLORS[i+1],clamped-i);
 }
 /** Maps a value's position within [min,max] to a point on the thermal scale. */
-function heatColorForValue(value:number,min:number,max:number,palette:string[]):string{
-  return heatColorAt(max>min?(value-min)/(max-min):.5,palette);
+function heatColorForValue(value:number,min:number,max:number):string{
+  return heatColorAt(max>min?(value-min)/(max-min):.5);
 }
 
 /** Hour-by-hour temperature chart. */
@@ -201,11 +195,9 @@ function HourlyChart({hours,unit,timezone,selectedDate,mode}:{hours:{time:string
     const axis={type:"category",boundaryGap:false,data:dates,axisTick:{interval:0,length:4,lineStyle:{color:"#52687e"}},axisLabel:{color:"#8ea0b3",interval:(idx:number)=>idx%labelStep===0||idx===dates.length-1,fontSize:10,hideOverlap:true,formatter:(v:string)=>hourLabel(v)},axisLine:{lineStyle:{color:"#31465c"}}};
     // Thermal colour scale: coldest point of the *currently visible* range maps to the first
     // stop, hottest to the last — relative per day/mode, not an absolute temperature scale.
-    // Actual and Feels-like use different palettes so the two views are visually distinct.
-    const palette=mode==="actual"?HEAT_COLORS_ACTUAL:HEAT_COLORS_FEELS;
     const domainMin=Math.min(...values), domainMax=Math.max(...values);
-    const lowColor=heatColorForValue(values[lowIndex],domainMin,domainMax,palette);
-    const highColor=heatColorForValue(values[highIndex],domainMin,domainMax,palette);
+    const lowColor=heatColorForValue(values[lowIndex],domainMin,domainMax);
+    const highColor=heatColorForValue(values[highIndex],domainMin,domainMax);
     // IMPORTANT: markPoint must NOT live on a series that visualMap targets (below). visualMap
     // recolors every element attached to its target series, including markers, and those don't
     // carry the plain [x,y] values it expects — that combination is what crashed the renderer
@@ -213,19 +205,20 @@ function HourlyChart({hours,unit,timezone,selectedDate,mode}:{hours:{time:string
     // data, just for anchoring), kept entirely out of heatSeriesIndex. The live-time marker
     // itself is drawn separately below as a plain `graphic` line rather than `markLine` — it
     // doesn't need a series at all, and this sidesteps the whole marker/visualMap interaction.
-    const base={name:mode==="actual"?"Actual":"Feels like",type:"line",data:hours.map(h=>[h.time,mode==="actual"?h.temp:h.feels]),smooth:.22,showSymbol:false,lineStyle:{width:3},itemStyle:{},areaStyle:mode==="actual"?{color:new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:withAlpha(heatColorAt(.6,palette),.55)},{offset:.7,color:withAlpha(heatColorAt(.6,palette),.16)},{offset:1,color:withAlpha(heatColorAt(.6,palette),0)}])}:{opacity:0},z:1};
+    // areaStyle deliberately has no explicit `color` — it inherits the same per-segment colour
+    // visualMap is already painting the line with, so the fill and the stroke always match.
+    const base={name:mode==="actual"?"Actual":"Feels like",type:"line",data:hours.map(h=>[h.time,mode==="actual"?h.temp:h.feels]),smooth:.22,showSymbol:false,lineStyle:{width:3},itemStyle:{},areaStyle:mode==="actual"?{opacity:.55}:{opacity:0},z:1};
     // Past hours are dotted (iOS Weather treats elapsed hours as mostly irrelevant); the
     // divider between dotted/solid is exactly "now" (see the graphic rectangle+line below),
     // and the curve itself switches from dotted to continuous right at that hour.
     const past=hasCurrent?{name:"__pastCurve",type:"line",data:hours.map((h,i)=>i<=currentIndex?[h.time,values[i]]:[h.time,null]),connectNulls:false,smooth:.22,showSymbol:false,lineStyle:{width:3,type:"dotted",opacity:.55},itemStyle:{opacity:0},areaStyle:{opacity:0},tooltip:{show:false},z:2}:null;
-    // H/L badges — present in both Actual and Feels-like views now, each colored from its own
-    // palette above.
-    const markers={name:"__markers",type:"line",data:hours.map(h=>[h.time,mode==="actual"?h.temp:h.feels]),showSymbol:false,silent:true,lineStyle:{opacity:0},itemStyle:{opacity:0},areaStyle:{opacity:0},tooltip:{show:false},z:5,markPoint:{symbol:"circle",symbolSize:7,silent:true,label:{show:true,fontFamily:"Space Grotesk",fontSize:12,fontWeight:700,formatter:(p:any)=>p.data.name},data:[{name:"L",coord:[hours[lowIndex]?.time,values[lowIndex]],itemStyle:{color:lowColor,borderColor:"#071624",borderWidth:2},label:{position:"top",offset:[0,-9],color:lowColor}},{name:"H",coord:[hours[highIndex]?.time,values[highIndex]],itemStyle:{color:highColor,borderColor:"#071624",borderWidth:2},label:{position:"top",offset:[0,-9],color:highColor}}]}};
+    // H/L badges — present in both Actual and Feels-like views.
+    const markers={name:"__markers",type:"line",data:hours.map(h=>[h.time,mode==="actual"?h.temp:h.feels]),showSymbol:false,silent:true,lineStyle:{opacity:0},itemStyle:{opacity:0},areaStyle:{opacity:0},tooltip:{show:false},z:5,markPoint:{symbol:"circle",symbolSize:6,silent:true,label:{show:true,fontFamily:"Space Grotesk",fontSize:12,fontWeight:700,formatter:(p:any)=>p.data.name},data:[{name:"L",coord:[hours[lowIndex]?.time,values[lowIndex]],itemStyle:{color:lowColor,borderColor:"#071624",borderWidth:2},label:{position:"top",offset:[0,-4],color:lowColor}},{name:"H",coord:[hours[highIndex]?.time,values[highIndex]],itemStyle:{color:highColor,borderColor:"#071624",borderWidth:2},label:{position:"top",offset:[0,-4],color:highColor}}]}};
     const seriesArr:any[]=[base];
     const heatSeriesIndex=[0];
     if(past){seriesArr.push(past);heatSeriesIndex.push(seriesArr.length-1);}
     seriesArr.push(markers);
-    c.setOption({animationDuration:300,visualMap:{show:false,type:"continuous",dimension:1,seriesIndex:heatSeriesIndex,min:domainMin,max:domainMax,inRange:{color:palette}},tooltip:{show:true,trigger:"axis",axisPointer:{type:"line",lineStyle:{color:"rgba(224,235,246,.28)",width:1}},backgroundColor:"rgba(7,18,30,.96)",borderColor:"rgba(194,216,239,.16)",textStyle:{color:"#eaf2f8",fontFamily:"DM Sans",fontSize:11},formatter:(params:any[])=>{const row=params.find(p=>p.seriesName!=="__pastCurve"&&p.seriesName!=="__markers"&&p.value?.[1]!=null);if(!row)return"";const p=hours.find(h=>h.time===row.axisValue);if(!p)return"";const value=mode==="actual"?p.temp:p.feels;return `<div style="font-weight:700;margin-bottom:6px">${hourLabel(row.axisValue)}</div><div style="display:flex;gap:10px;justify-content:space-between"><span>${mode==="actual"?"Actual":"Feels like"}</span><b>${Math.round(value)}${unit}</b></div>`;}},grid:{left:GL,right:GR,top:GT,bottom:GB,containLabel:false},xAxis:axis,yAxis:{type:"value",min:0,minInterval:1,axisLabel:{color:"#8ea0b3",fontSize:10,formatter:(v:number)=>`${Math.round(v)}${unit}`},splitLine:{lineStyle:{color:"rgba(150,170,200,.10)"}}},series:seriesArr});
+    c.setOption({animationDuration:300,visualMap:{show:false,type:"continuous",dimension:1,seriesIndex:heatSeriesIndex,min:domainMin,max:domainMax,inRange:{color:HEAT_COLORS}},tooltip:{show:true,trigger:"axis",axisPointer:{type:"line",lineStyle:{color:"rgba(224,235,246,.28)",width:1}},backgroundColor:"rgba(7,18,30,.96)",borderColor:"rgba(194,216,239,.16)",textStyle:{color:"#eaf2f8",fontFamily:"DM Sans",fontSize:11},formatter:(params:any[])=>{const row=params.find(p=>p.seriesName!=="__pastCurve"&&p.seriesName!=="__markers"&&p.value?.[1]!=null);if(!row)return"";const p=hours.find(h=>h.time===row.axisValue);if(!p)return"";const value=mode==="actual"?p.temp:p.feels;return `<div style="font-weight:700;margin-bottom:6px">${hourLabel(row.axisValue)}</div><div style="display:flex;gap:10px;justify-content:space-between"><span>${mode==="actual"?"Actual":"Feels like"}</span><b>${Math.round(value)}${unit}</b></div>`;}},grid:{left:GL,right:GR,top:GT,bottom:GB,containLabel:false},xAxis:axis,yAxis:{type:"value",min:(v:{min:number})=>Math.min(0,Math.floor(v.min)),minInterval:1,axisLabel:{color:"#8ea0b3",fontSize:10,formatter:(v:number)=>`${Math.round(v)}${unit}`},splitLine:{lineStyle:{color:"rgba(150,170,200,.10)"}}},series:seriesArr});
 
     // Live-time marker: a flat dark rectangle covering everything left of "now" (not a fade —
     // iOS Weather just dims the whole past region uniformly, since elapsed hours are close to
