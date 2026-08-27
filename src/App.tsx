@@ -145,7 +145,7 @@ function RangeToggle({showRange,setShowRange}:{showRange:boolean;setShowRange:(v
 }
 
 function DayCard({d,isToday,selected,onClick,conv}:{d:any;isToday:boolean;selected:boolean;onClick:()=>void;conv:(n:number)=>number}){
- return <button className={`day ${selected?"selected":""}`} onClick={onClick}><small>{isToday?"Today":new Date(d.date+"T12:00:00").toLocaleDateString(undefined,{weekday:"short"})}</small><b>{icon(d.code)}</b><strong><small className="hl">H</small>{Math.round(conv(d.max))}°</strong><span><small className="hl">L</small>{Math.round(conv(d.min))}°</span><p>{label(d.code)}</p><small className="dayMeta"><span>💧 {Math.round(d.rain)}%</span> · <span>{Math.round(d.wind)} km/h</span></small></button>
+ return <button className={`day ${selected?"selected":""}`} onClick={onClick}><small>{new Date(d.date+"T12:00:00").toLocaleDateString(undefined,{weekday:"short"})}{isToday?" (Today)":""}</small><b>{icon(d.code)}</b><strong><small className="hl">H</small>{Math.round(conv(d.max))}°</strong><span><small className="hl">L</small>{Math.round(conv(d.min))}°</span><p>{label(d.code)}</p><small className="dayMeta"><span>💧 {Math.round(d.rain)}%</span> · <span>{Math.round(d.wind)} km/h</span></small></button>
 }
 
 // Thermal colour scale used for hourly temperature curves. Anchored to *absolute* real-world
