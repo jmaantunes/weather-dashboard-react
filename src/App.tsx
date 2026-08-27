@@ -286,7 +286,7 @@ function HourlyChart({hours,unit,timezone,selectedDate,mode}:{hours:{time:string
     // rectangular tick marks) — iOS Weather treats elapsed hours as mostly irrelevant. The
     // divider is exactly "now" (see the graphic rectangle+line below), positioned to the exact
     // minute rather than snapped to the hour.
-    const past=hasCurrent?{name:"__pastCurve",type:"line",data:denseIdx.map(i=>i<=currentIndex?[dates[i],values[i]]:[dates[i],null]),connectNulls:false,smooth:.22,showSymbol:false,lineStyle:{width:3,type:[11,5],cap:"round"},itemStyle:{opacity:0},areaStyle:mode==="actual"?{opacity:.55}:{opacity:0},tooltip:{show:false},z:1}:null;
+    const past=hasCurrent?{name:"__pastCurve",type:"line",data:denseIdx.map(i=>i<=currentIndex?[dates[i],values[i]]:[dates[i],null]),connectNulls:false,smooth:.22,showSymbol:false,lineStyle:{width:3,type:[11,5],cap:"round"},itemStyle:{opacity:0},areaStyle:mode==="actual"?{opacity:.55}:{opacity:0},z:1}:null;
     // In the Feels-like view, overlay the plain Actual temperature as a thin flat grey
     // reference line (no fill, no per-segment heat colour, not part of visualMap) so the two
     // can be compared directly — same idea as iOS Weather's Feels Like screen.
