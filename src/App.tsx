@@ -11,6 +11,50 @@ const yearNow=new Date().getFullYear();
 
 function isAbortError(e:unknown){return e instanceof DOMException&&e.name==="AbortError"}
 
+// Renders `text` as a single line that always spans edge-to-edge of its container: instead of
+// truncating with an ellipsis when the sentence is too long, it shrinks the font-size until the
+// text's natural width fits. Re-measures on text change and on container resize (covers window
+// resize, and browser zoom which changes available width without necessarily firing a text
+// change).
+// Below 760px (the same breakpoint the rest of the layout treats as "mobile"), the one-line
+// fitting is turned off entirely and the text just wraps normally at `max` size — mobile users
+// are already scrolling the page vertically, so a second line here costs nothing, whereas
+// shrinking a long sentence down to a mobile-width column would make it too small to read.
+function FitText({text,min=11,max=30,className}:{text:string;min?:number;max?:number;className?:string}){
+  const ref=useRef<HTMLDivElement|null>(null);
+  const[size,setSize]=useState(max);
+  const[wrap,setWrap]=useState(false);
+  useEffect(()=>{
+    const mq=window.matchMedia("(max-width:760px)");
+    const update=()=>setWrap(mq.matches);
+    update();
+    mq.addEventListener("change",update);
+    return()=>mq.removeEventListener("change",update);
+  },[]);
+  useEffect(()=>{
+    const el=ref.current;if(!el||wrap){return}
+    const fit=()=>{
+      const containerWidth=el.clientWidth;
+      if(!containerWidth){return}
+      el.style.fontSize=`${max}px`;
+      const naturalWidth=el.scrollWidth;
+      if(naturalWidth<=containerWidth){setSize(max);return}
+      // Scale down proportionally from the overflow ratio (text width scales ~linearly with
+      // font-size), then re-measure once at that size and nudge down further if hinting/kerning
+      // left it still a hair too wide — guarantees the line never actually overflows, rather
+      // than trusting the linear estimate alone.
+      let next=Math.max(min,Math.floor(max*(containerWidth/naturalWidth)*0.99));
+      el.style.fontSize=`${next}px`;
+      while(next>min&&el.scrollWidth>containerWidth){next-=1;el.style.fontSize=`${next}px`}
+      setSize(next);
+    };
+    fit();
+    const ro=new ResizeObserver(fit);ro.observe(el);
+    return()=>ro.disconnect();
+  },[text,min,max,wrap]);
+  return <div ref={ref} className={className} style={wrap?{whiteSpace:"normal",overflow:"visible"}:{fontSize:size,whiteSpace:"nowrap",overflow:"hidden"}}>{text}</div>;
+}
+
 function LocationPicker({loc,setLoc}:{loc:Location;setLoc:(x:Location)=>void}){
   const[v,setV]=useState(loc.name),[rs,setRs]=useState<Location[]>([]),[open,setOpen]=useState(false);
   useEffect(()=>setV(loc.name),[loc]);
@@ -145,7 +189,11 @@ function RangeToggle({showRange,setShowRange}:{showRange:boolean;setShowRange:(v
 }
 
 function DayCard({d,isToday,selected,onClick,conv}:{d:any;isToday:boolean;selected:boolean;onClick:()=>void;conv:(n:number)=>number}){
- return <button className={`day ${selected?"selected":""}`} onClick={onClick}><small>{new Date(d.date+"T12:00:00").toLocaleDateString(undefined,{weekday:"short"})}{isToday?" (Today)":""}</small><b>{icon(d.code)}</b><strong><small className="hl">H</small>{Math.round(conv(d.max))}°</strong><span><small className="hl">L</small>{Math.round(conv(d.min))}°</span><p>{label(d.code)}</p><small className="dayMeta"><span>💧 {Math.round(d.rain)}%</span> · <span>{Math.round(d.wind)} km/h</span></small></button>
+ return <button className={`day ${selected?"selected":""}`} onClick={onClick}>
+   <span className="dayWho"><small>{new Date(d.date+"T12:00:00").toLocaleDateString(undefined,{weekday:"short"})}{isToday?" (Today)":""}</small><b>{icon(d.code)}</b></span>
+   <span className="dayTemps"><strong><small className="hl">H</small>{Math.round(conv(d.max))}°</strong><span><small className="hl">L</small>{Math.round(conv(d.min))}°</span></span>
+   <span className="dayCond"><b className="condLabel">{label(d.code)}</b><small className="dayMeta">💧 {Math.round(d.rain)}% · {Math.round(d.wind)} km/h</small></span>
+ </button>
 }
 
 // Thermal colour scale used for hourly temperature curves. Anchored to *absolute* real-world
@@ -286,7 +334,7 @@ function HourlyChart({hours,unit,timezone,selectedDate,mode}:{hours:{time:string
     // rectangular tick marks) — iOS Weather treats elapsed hours as mostly irrelevant. The
     // divider is exactly "now" (see the graphic rectangle+line below), positioned to the exact
     // minute rather than snapped to the hour.
-    const past=hasCurrent?{name:"__pastCurve",type:"line",data:denseIdx.map(i=>i<=currentIndex?[dates[i],values[i]]:[dates[i],null]),connectNulls:false,smooth:.22,showSymbol:false,lineStyle:{width:3,type:[11,5],cap:"round"},itemStyle:{opacity:0},areaStyle:mode==="actual"?{opacity:.55}:{opacity:0},z:1}:null;
+    const past=hasCurrent?{name:"__pastCurve",type:"line",data:denseIdx.map(i=>i<=currentIndex?[dates[i],values[i]]:[dates[i],null]),connectNulls:false,smooth:.22,showSymbol:false,lineStyle:{width:3,type:[9,7],cap:"round"},itemStyle:{opacity:0},areaStyle:mode==="actual"?{opacity:.55}:{opacity:0},z:1}:null;
     // In the Feels-like view, overlay the plain Actual temperature as a thin flat grey
     // reference line (no fill, no per-segment heat colour, not part of visualMap) so the two
     // can be compared directly — same idea as iOS Weather's Feels Like screen.
@@ -429,7 +477,7 @@ function daytimeAverage(hours:{time:string;temp:number}[],sunrise?:string,sunset
 function HourlyModeToggle({mode,setMode}:{mode:"actual"|"feels";setMode:(v:"actual"|"feels")=>void}){
  return <div className="hourlyModeToggle"><small>VIEW</small><div className="switch"><button type="button" className={mode==="actual"?"active":""} onClick={()=>setMode("actual")}>Actual</button><button type="button" className={mode==="feels"?"active":""} onClick={()=>setMode("feels")}>Feels like</button></div></div>
 }
-function HourlyDetails({day,hours,sunrise,sunset,timezone,cityName,unit,conv}:{day:any;hours:{time:string;temp:number;feels:number;rain:number;wind:number;code:number;isDay?:boolean}[];sunrise?:string;sunset?:string;timezone:string;cityName:string;unit:string;conv:(n:number)=>number}){
+function HourlyDetails({day,hours,sunrise,sunset,timezone,unit,conv}:{day:any;hours:{time:string;temp:number;feels:number;rain:number;wind:number;code:number;isDay?:boolean}[];sunrise?:string;sunset?:string;timezone:string;unit:string;conv:(n:number)=>number}){
  const dayHours=hours.slice(0,24);
  const temps=dayHours.map(h=>h.temp);
  const minIdx=temps.length?temps.indexOf(Math.min(...temps)):-1;
@@ -439,12 +487,16 @@ function HourlyDetails({day,hours,sunrise,sunset,timezone,cityName,unit,conv}:{d
  const[nowTick,setNowTick]=useState(Date.now());
  useEffect(()=>{const id=window.setInterval(()=>setNowTick(Date.now()),60_000);return()=>window.clearInterval(id)},[timezone,day.date]);
  const currentHourKey=(()=>{const p=new Intl.DateTimeFormat("en-CA",{timeZone:timezone,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",hourCycle:"h23"}).formatToParts(new Date(nowTick));const g=(t:string)=>p.find(x=>x.type===t)?.value||"";const d=`${g("year")}-${g("month")}-${g("day")}`;return d===day.date?`${d}T${g("hour")}:00`:null;})();
- return <div className="hourlyPanel"><div className="hourlyHead"><div><label>HOURLY DETAIL</label><h3>{fmtWeekdayDate(day.date)}</h3></div><span>{cityName} · local time ({timezone})</span></div>
- {(sunrise||sunset||daytimeAvg!=null)&&<div className="dayFacts">
-   {sunrise&&<span>☀️ Sunrise {hm(sunrise)}</span>}
-   {sunset&&<span>🌇 Sunset {hm(sunset)}</span>}
-   {daytimeAvg!=null&&<span>🌡️ Daytime avg {Math.round(conv(daytimeAvg))}{unit}</span>}
- </div>}
+ return <div className="hourlyPanel"><div className="hourlyHead">
+   <div><label>HOURLY DETAIL</label><h3>{fmtWeekdayDate(day.date)}</h3></div>
+   <div className="hourlyHeadRight">
+     {(sunrise||sunset||daytimeAvg!=null)&&<div className="dayFacts">
+       {sunrise&&<span>☀️ Sunrise {hm(sunrise)}</span>}
+       {sunset&&<span>🌇 Sunset {hm(sunset)}</span>}
+       {daytimeAvg!=null&&<span>🌡️ Daytime avg {Math.round(conv(daytimeAvg))}{unit}</span>}
+     </div>}
+   </div>
+ </div>
  <div className="chartSection"><div className="miniChartHead"><div><label>TEMPERATURE</label><span>{hourlyMode==="actual"?"Actual temperature with high / low markers":"Apparent temperature"}</span></div><HourlyModeToggle mode={hourlyMode} setMode={setHourlyMode}/></div><HourlyChart hours={hours.map(h=>({time:h.time,temp:conv(h.temp),feels:conv(h.feels),code:h.code,isDay:h.isDay}))} unit={unit} timezone={timezone} selectedDate={day.date} mode={hourlyMode}/></div>
  <div className="chartSection precipSection"><div className="miniChartHead"><div><label>PRECIPITATION</label><span>Probability adapts to rain, snow and storm / hail risk</span></div></div><PrecipitationChart hours={hours.map(h=>({time:h.time,rain:h.rain,code:h.code}))} timezone={timezone} selectedDate={day.date}/></div>
  <div className="hourlyTableOuter">
@@ -554,10 +606,10 @@ function App(){
  const daySummaryText=selected&&selectedHours.length?daySummary(selectedHours.slice(0,24),selected.code,conv,unit):"";
  const selectedSunrise=data?.daily.sunrise?.[selectedDay];
  const selectedSunset=data?.daily.sunset?.[selectedDay];
- return <><header><div className="brand"><span><CloudSun size={21}/></span><b>Weather Dashboard</b><small>weather · climate · context</small></div><div className="controls"><LocationPicker loc={loc} setLoc={setLoc}/><select value={unit} onChange={e=>setUnit(e.target.value)}><option>°C</option><option>°F</option></select></div></header>
- <main><div className="hero"><div><h1>{loc.name}<em>, {loc.country}</em></h1></div><aside><small>LOCAL DATE</small><b>{fmt(today,{weekday:"long",month:"long",day:"numeric",year:"numeric"})}</b></aside></div>
+ return <><header><div className="brand"><span><CloudSun size={21}/></span><b>Weather Dashboard</b><small>weather · climate · context</small></div><div className="headerDate"><small>LOCAL DATE</small><b>{fmt(today,{weekday:"long",month:"long",day:"numeric",year:"numeric"})}</b></div><div className="controls"><LocationPicker loc={loc} setLoc={setLoc}/><select value={unit} onChange={e=>setUnit(e.target.value)}><option>°C</option><option>°F</option></select></div></header>
+ <main>
  {err&&<div className="error">{err}</div>}
- <section><div className="head"><div className="forecastHead"><label>7-DAY FORECAST</label><h2>{daySummaryText||"Select a day to open the full 24-hour forecast."}</h2></div></div><div className="days">{orderedDays.map(d=><DayCard key={d.date} d={d} isToday={d.date===today} selected={d.i===selectedDay} onClick={()=>setSelectedDay(d.i)} conv={conv}/>)}</div>{selected&&data&&<HourlyDetails day={selected} hours={selectedHours} sunrise={selectedSunrise} sunset={selectedSunset} timezone={data.timezone} cityName={loc.name} unit={unit} conv={conv}/>}</section>
+ <section><div className="head"><div className="forecastHead"><label>7-DAY FORECAST</label><FitText className="forecastHeadline" text={daySummaryText||"Select a day to open the full 24-hour forecast."} min={15} max={30}/></div></div><div className="days">{orderedDays.map(d=><DayCard key={d.date} d={d} isToday={d.date===today} selected={d.i===selectedDay} onClick={()=>setSelectedDay(d.i)} conv={conv}/>)}</div>{selected&&data&&<HourlyDetails day={selected} hours={selectedHours} sunrise={selectedSunrise} sunset={selectedSunset} timezone={data.timezone} unit={unit} conv={conv}/>}</section>
  <section><div className="head"><div><label>ANNUAL TEMPERATURE</label><h2>Temperature through the year</h2><p>Compare observed temperatures with the seasonal baseline and near-term forecast.</p></div><div className="headControls"><RangeToggle showRange={showRange} setShowRange={setShowRange}/><div className="year"><small>YEAR</small><div className="yearRow"><select value={y} onChange={e=>setY(+e.target.value)}>{Array.from({length:41},(_,i)=>yearNow-20+i).map(n=><option key={n}>{n}</option>)}</select><button aria-label="Reset to current year" onClick={()=>setY(yearNow)}><RefreshCw size={15}/></button></div></div></div></div>
  <Legend showObserved={showObserved} showForecast={showForecast}/>{loading?<div className="loading">Loading weather data…</div>:<TemperatureChart observed={obs} typical={typical} forecastPoints={future} unit={unit} showForecast={showForecast} showRange={showRange} onVisibleRangeChange={(start,end)=>setVisibleRange(prev=>(prev&&prev.start===start&&prev.end===end)?prev:{start,end})}/>}
  <div className="zoomGuide"><div><b>Focus the chart</b><span>Use the handles below to choose a date range, or scroll inside the chart to zoom.</span></div><span className="rangeHint">◀ drag handles · ▶ drag range</span></div>
